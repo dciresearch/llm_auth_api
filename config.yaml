@@ -1,0 +1,9 @@
+manager_config:
+  max_idle_time: 0
+  max_used_memory_per_gpu: 4000
+celery_config:
+  rabitmq_port: 5672
+  redis_port: 6379
+  manager_port: 6333
+  app_port: 1234
+  dbapi_port: 2235
