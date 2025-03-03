@@ -81,6 +81,8 @@ class VllmTask(Task):
         if res['port'] is None:
             return make_error(res["message"])
         client, c_name = fetch_client_by_port(res['port'], res['key'])
+        if client is None:
+            return make_error("Client may be respawning. Please repeat your request later.")
         request_json['model'] = c_name
         return client
 

@@ -214,7 +214,7 @@ class InstanceManager:
             v = self._store.pop(k)
             del v
 
-    def spawn_docker(self, config: Dict[str, Any], startup_time: int = 30):
+    def spawn_docker(self, config: Dict[str, Any], startup_time: int = 60):
         gpu_ids = find_gpu_ids(config["gpu_needed"], self.discard_memory_thr)
         if gpu_ids is None:
             return False
@@ -254,6 +254,7 @@ class InstanceManager:
         instance = LlmInstance(config['model_alias'], port, api_key, container)
 
         # Make sure container started
+        # TODO make dynamic startup check
         time.sleep(startup_time)
         if not instance.check_health():
             del instance
