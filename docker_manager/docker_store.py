@@ -247,7 +247,8 @@ class InstanceManager:
             tty=True,
             mounts=[mount],
             ports={8000: port},
-            device_requests=[gpu]
+            device_requests=[gpu],
+            shm_size="12G",
         )
 
         instance = LlmInstance(config['model_alias'], port, api_key, container)
