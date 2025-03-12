@@ -156,8 +156,10 @@ class InstanceManager:
     def fetch_known_models(self):
         self._load_or_update_library()
         model_names = sorted(self._known_configs.keys())
+        spawned_model_names = set(self._store.keys())
         model_lens = [self._known_configs[mn]['extra_args'].get('max_model_len', None) for mn in model_names]
-        return list(zip(model_names, model_lens))
+        status = ["spawned" if mn in spawned_model_names else "offloaded" for mn in model_names]
+        return list(zip(model_names, model_lens, status))
 
     def fetch_spawned_models(self):
         self.remove_idle_or_crashed_instances()
@@ -166,14 +168,23 @@ class InstanceManager:
         return list(zip(model_names, model_lens))
 
     def try_spawn_by_alias(self, model_alias):
-        self.remove_idle_or_crashed_instances(remove_idle=False)
-        if model_alias in self._store:
-            return True
-        self.remove_idle_or_crashed_instances()
+        # Check if model_alias is registered in the system
         self._load_or_update_library()
         if model_alias not in self._known_configs:
             return False
         config = self._known_configs[model_alias]
+
+        # Remove lost dockers
+        self.remove_idle_or_crashed_instances(remove_idle=False)
+        # No need for spawning
+        if model_alias in self._store:
+            return True
+
+        # Check if we have gpus to spawn new docker
+        gpu_ids = self.get_gpu_ids(config)
+        # Try removing idle containers to free up space
+        if not gpu_ids:
+            self.remove_idle_or_crashed_instances()
         spawned = self.spawn_docker(config)
         return spawned
 
@@ -214,12 +225,18 @@ class InstanceManager:
             v = self._store.pop(k)
             del v
 
-    def spawn_docker(self, config: Dict[str, Any], startup_time: int = 60):
+    def get_gpu_ids(self, config):
         gpu_ids = find_gpu_ids(config["gpu_needed"], self.discard_memory_thr)
         if gpu_ids is None:
-            return False
+            return []
         gpu_ids = list(map(str, gpu_ids))
+        return gpu_ids
 
+    def spawn_docker(self, config: Dict[str, Any], startup_time: int = 60):
+        gpu_ids = self.get_gpu_ids(config)
+        # No gpus to spawn new docker
+        if not gpu_ids:
+            return False
         gpu = docker.types.DeviceRequest(device_ids=gpu_ids, capabilities=[['gpu']])
         tp, pp = get_gpu_breakdown(config["gpu_needed"])
 

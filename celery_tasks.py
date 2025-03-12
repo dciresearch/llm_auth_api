@@ -115,7 +115,7 @@ class VllmTask(Task):
 
     def model_list(self, request_json=None):
         models = self.query_manager('library',)["models"]
-        models = [{'id': m[0], 'max_model_len': m[1]} for m in models]
+        models = [{'id': m[0], 'max_model_len': m[1], "status": m[2]} for m in models]
         models = {'data': models}
         return json.dumps(models)
 
