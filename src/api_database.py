@@ -60,7 +60,7 @@ class Database:
 
     def generate_user_key(self, user_name, priority):
         # TODO make better hashing
-        new_key = f"{user_name}+{priority}"
+        new_key = f"{user_name}+{priority}+{id(self)}"
         new_key = shuffle_string(new_key)
         new_key = get_key_hash(new_key)
         return new_key
