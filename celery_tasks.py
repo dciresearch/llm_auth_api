@@ -108,7 +108,8 @@ class VllmTask(Task):
                 res = res.json()
             else:
                 return self.process_streaming_chunk(generation_func, request_json)
-        except:
+        except Exception as e:
+            print(e)
             res = make_error("Unexpected server error occured")
         return res
     
@@ -116,7 +117,7 @@ class VllmTask(Task):
         redis = celery_app.backend.client
         
         # Ключ для хранения чанков в Redis
-        stream_key = f"stream:{self.task_id}"
+        stream_key = f"stream:{self.request.id}"
         
         # Очищаем предыдущие данные, если они есть
         redis.delete(stream_key)
@@ -126,7 +127,6 @@ class VllmTask(Task):
         
         # Счетчик для чанков
         chunk_index = 0
-
         for chunk in generation_func(**request_json):
             chunk_data = json.dumps(chunk.model_dump())
             
@@ -162,7 +162,6 @@ class VllmTask(Task):
 @celery_app.task(base=VllmTask, bind=True, acks_late=True)
 def send_vllm_request(self, request_json):
     # logger.info(request_json)
-
     command = request_json['command']
     request_json = request_json.get('args', None)
 
