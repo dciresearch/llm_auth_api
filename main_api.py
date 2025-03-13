@@ -16,6 +16,7 @@ from fastapi import APIRouter, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 
+from celery_tasks import celery_app
 
 TIMEOUT_KEEP_ALIVE = 5  # seconds
 
@@ -53,14 +54,77 @@ async def post_to_queue(raw_request, command):
     except json.decoder.JSONDecodeError:
         request_json = None
     request_json = {"command": command, "args": request_json}
+    stream = request_json.get('stream', False)
 
     task = send_vllm_request.apply_async(
-        args=[request_json], priority=priority,
-        expires=TIME_TO_EXPIRE,  # datetime.datetime.now(tz=pytz.timezone('Etc/GMT+2')) + timedelta(seconds=5),
-    )
-    res = await wait_for_task(task)
-    return json.loads(res)
+            args=[request_json], priority=priority,
+            expires=TIME_TO_EXPIRE,  # datetime.datetime.now(tz=pytz.timezone('Etc/GMT+2')) + timedelta(seconds=5),
+        )
+    stream_task_id = task.task_id
 
+    if not stream:
+        res = await wait_for_task(task)
+        return json.loads(res)
+    else:
+        def generate():
+            # Получаем Redis-соединение
+            redis = celery_app.backend.client
+            stream_key = f"stream:{stream_task_id}"
+            
+            # Ожидаем начала выполнения задачи
+            time.sleep(0.1)
+            
+            # Последний обработанный чанк
+            last_processed = -1
+            
+            # Максимальное время ожидания (30 секунд)
+            max_wait_time = 30
+            start_time = time.time()
+            
+            while time.time() - start_time < max_wait_time:
+                # Проверяем статус
+                status = redis.hget(stream_key, "status")
+                
+                if not status:
+                    # Ключ еще не создан, ждем
+                    time.sleep(0.1)
+                    continue
+                
+                status = status.decode('utf-8')
+                
+                if status == "FAILED":
+                    error = redis.hget(stream_key, "error")
+                    print(f"Streaming failed: {error}")
+                    break
+                
+                # Получаем индекс последнего чанка
+                last_chunk_str = redis.hget(stream_key, "last_chunk")
+                if last_chunk_str:
+                    last_chunk = int(last_chunk_str.decode('utf-8'))
+                    
+                    # Обрабатываем новые чанки
+                    for i in range(last_processed + 1, last_chunk + 1):
+                        chunk_data = redis.hget(stream_key, f"chunk:{i}")
+                        if chunk_data:
+                            chunk_json = chunk_data.decode('utf-8')
+                            #print(f"Sending chunk: {chunk_json}")
+                            yield f"data: {chunk_json}\n\n"
+                            #yield f"data: {chunk_data.decode('utf-8')}\n\n"
+                    
+                    # Обновляем последний обработанный чанк
+                    last_processed = last_chunk
+                
+                # Если задача завершена и все чанки обработаны
+                if status == "COMPLETED" and last_processed == last_chunk:
+                    break
+                
+                time.sleep(0.05)
+            
+            yield "data: [DONE]\n\n"
+        return StreamingResponse(
+            generate(),
+            media_type="text/event-stream"
+        )
 
 @router.get("/health")
 async def health(raw_request: Request):
