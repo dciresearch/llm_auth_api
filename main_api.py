@@ -65,19 +65,19 @@ async def post_to_queue(raw_request, command):
         res = await wait_for_task(task)
         return json.loads(res)
     else:
-        def generate():
+        async def generate():
             # Получаем Redis-соединение
             redis = celery_app.backend.client
             stream_key = f"stream:{stream_task_id}"
             
             # Ожидаем начала выполнения задачи
-            time.sleep(0.1)
-            
+            #time.sleep(0.1)
+            await asyncio.sleep(0.1)
             # Последний обработанный чанк
             last_processed = -1
             
             # Максимальное время ожидания (30 секунд)
-            max_wait_time = 30
+            max_wait_time = 180
             start_time = time.time()
             
             while time.time() - start_time < max_wait_time:
@@ -86,7 +86,8 @@ async def post_to_queue(raw_request, command):
                 
                 if not status:
                     # Ключ еще не создан, ждем
-                    time.sleep(0.1)
+                    #time.sleep(0.1)
+                    await asyncio.sleep(0.1)
                     continue
                 
                 status = status.decode('utf-8')
@@ -117,7 +118,8 @@ async def post_to_queue(raw_request, command):
                 if status == "COMPLETED" and last_processed == last_chunk:
                     break
                 
-                time.sleep(0.05)
+                #time.sleep(0.05)
+                await asyncio.sleep(0.05)
             
             yield "data: [DONE]\n\n"
         return StreamingResponse(
@@ -306,10 +308,13 @@ async def authentication(request: Request, call_next):
                             status_code=401)
 
     response = await call_next(request)
-    if isinstance(response, StreamingResponse) or isinstance(response, _StreamingResponse):
+    stream = False
+    if request_dict.get('body', None) is not None:
+        stream = request_dict['body'].get('stream', False)
+
+    if stream and (isinstance(response, StreamingResponse) or isinstance(response, _StreamingResponse)):
         response.body_iterator = LoggingIterator(response.body_iterator, request_dict, user_id)
     else:
-        ## not really happends ever?
         response = await to_fastapi_response(response)
         response_dict = json.loads(response.body)
         if 'status_code' not in response_dict and request_dict['body'] is not None:
