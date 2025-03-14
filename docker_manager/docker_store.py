@@ -1,4 +1,5 @@
-from docker.errors import NotFound
+import requests
+from docker.errors import NotFound, APIError
 import uuid
 from pathlib import Path
 import os
@@ -71,44 +72,65 @@ def get_gpu_breakdown(gpu_needed):
     return tp, pp
 
 
-class LlmInstance:
+def is_vllm_up(port, url='localhost'):
+    try:
+        r = requests.get(url=f'http://{url}:{port}/health')
+        return r.status_code == 200
+    except:
+        return False
+
+
+class VllmInstance:
     def __init__(self, model_alias: str, vllm_port: int, api_key: str, container: Container, max_idle_time: int):
         self.model_alias = model_alias
         self.vllm_port = vllm_port
         self.api_key = api_key
         self.container = container
-        self.max_idle_time = max_idle_time
+        self._max_idle_time = max_idle_time
 
-        self.time_created = time.time()
-        self.last_accessed = time.time()
+        self._time_created = time.time()
+        self._last_accessed = time.time()
 
     def reset_access_timer(self):
-        self.last_accessed = time.time()
+        self._last_accessed = time.time()
 
     def check_health(self):
+        print(self.container.status)
         try:
             self.container.reload()
         except NotFound:
             return False
-        return self.container.status == 'running'
+        if self.container.status == 'running':
+            return is_vllm_up(self.port)
+        return False
 
-    def get_port(self) -> int:
-        return int(self.vllm_port)
+    @property
+    def port(self) -> int:
+        return self.vllm_port
 
-    def get_key(self) -> int:
-        return self.api_key[:]
+    @property
+    def key(self) -> int:
+        return self.api_key
+
+    @property
+    def max_idle_time(self):
+        return self._max_idle_time
 
     def get_time_idle(self):
-        return (time.time()-self.last_accessed) // 60
+        return (time.time()-self._last_accessed) // 60
 
-    def get_max_idle_time(self):
-        return self.max_idle_time
+    def expired(self):
+        return self.get_time_idle() > self.max_idle_time
+
+    def stop_container(self):
+        while True:
+            try:
+                self.container.kill()
+            except (NotFound, APIError):
+                break
 
     def __del__(self):
-        try:
-            self.container.stop()
-        except NotFound:
-            pass
+        self.stop_container()
 
 
 class InstanceManager:
@@ -116,13 +138,15 @@ class InstanceManager:
         self, config_directory: str, port_range=DEFAULT_PORT_RANGE,
         max_memory_thr=USED_MEMORY_THRESHOLD, default_idle_time=120
     ):
-        self._store: Dict[str, LlmInstance] = {}
+        self._store: Dict[str, VllmInstance] = {}
         self._known_configs: Dict[str, Dict[str, Any]] = {}
         self._config_stamps: Dict[str, float] = {}
         self._config_dir = Path(config_directory)
         assert self._config_dir.exists(), "config_directory can't be found, please check the path"
+
         port_ranges = tuple(map(int, port_range.split('-')))
         self._known_ports = set(range(*port_ranges))
+
         self._default_idle_time = default_idle_time
         self._load_or_update_library()
         self.API_KEY = str(uuid.uuid4())
@@ -133,17 +157,18 @@ class InstanceManager:
     def remove_possible_orphans(self):
         client = docker.from_env()
         containers = client.containers.list()
+        print(containers)
         for c in containers:
             if c.name.startswith(self.prefix):
                 c.stop()
 
     def get_allocated_ports(self):
-        return {v.vllm_port for v in self._store.values()}
+        return {v.port for v in self._store.values()}
 
     def get_vacant_port(self):
         return random.choice(list(self._known_ports - self.get_allocated_ports()))
 
-    def track_new_instance(self, instance: LlmInstance):
+    def track_new_instance(self, instance: VllmInstance):
         self._store[instance.model_alias] = instance
 
     def _load_or_update_library(self):
@@ -189,6 +214,7 @@ class InstanceManager:
         # Try removing idle containers to free up space
         if not gpu_ids:
             self.remove_idle_or_crashed_instances()
+        print(f"Found gpus {gpu_ids} for {config['model_alias']}. Spawning...")
         spawned = self.spawn_docker(config)
         return spawned
 
@@ -208,20 +234,20 @@ class InstanceManager:
             )
         i = self._store[model_alias]
         i.reset_access_timer()
-        return ("OK", i.get_port(), i.get_key())
+        return ("OK", i.port, i.key)
 
     def remove_idle_or_crashed_instances(self, remove_idle=True):
         for k in list(self._store.keys()):
             v = self._store[k]
-            print(v, v.check_health(), v.get_time_idle(), v.get_max_idle_time())
+            print(v, v.check_health(), v.get_time_idle(), v.max_idle_time, remove_idle and v.expired())
             if (
                 (
                     not v.check_health()
                 ) or (
-                    remove_idle and v.get_time_idle() > v.get_max_idle_time()
+                    remove_idle and v.expired()
                 )
             ):
-                del v
+                v.stop_container()
                 self._store.pop(k)
 
     def purge_all_instances(self):
@@ -236,7 +262,7 @@ class InstanceManager:
         gpu_ids = list(map(str, gpu_ids))
         return gpu_ids
 
-    def spawn_docker(self, config: Dict[str, Any], startup_time: int = 30, retry_count: int = 5):
+    def spawn_docker(self, config: Dict[str, Any], startup_time: int = 20, retry_count: int = 6):
         gpu_ids = self.get_gpu_ids(config)
         # No gpus to spawn new docker
         if not gpu_ids:
@@ -272,7 +298,10 @@ class InstanceManager:
             shm_size="12G",
         )
 
-        instance = LlmInstance(config['model_alias'], port, api_key, container, config.get('custom_max_idle_time', self._default_idle_time))
+        idle_limit = config.get('max_idle_time', self._default_idle_time)
+
+        instance = VllmInstance(config['model_alias'], port, api_key, container,
+                                idle_limit)
 
         # Make sure container started
         # TODO make dynamic startup check
