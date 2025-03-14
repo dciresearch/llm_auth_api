@@ -72,12 +72,12 @@ def get_gpu_breakdown(gpu_needed):
 
 
 class LlmInstance:
-    def __init__(self, model_alias: str, vllm_port: int, api_key: str, container: Container, custom_max_idle_time: int | None = None):
+    def __init__(self, model_alias: str, vllm_port: int, api_key: str, container: Container, max_idle_time: int):
         self.model_alias = model_alias
         self.vllm_port = vllm_port
         self.api_key = api_key
         self.container = container
-        self.custom_max_idle_time = custom_max_idle_time
+        self.max_idle_time = max_idle_time
 
         self.time_created = time.time()
         self.last_accessed = time.time()
@@ -102,7 +102,7 @@ class LlmInstance:
         return (time.time()-self.last_accessed) // 60
 
     def get_max_idle_time(self):
-        return self.custom_max_idle_time
+        return self.max_idle_time
 
     def __del__(self):
         try:
@@ -213,13 +213,12 @@ class InstanceManager:
     def remove_idle_or_crashed_instances(self, remove_idle=True):
         for k in list(self._store.keys()):
             v = self._store[k]
-            max_idle_time = self._default_idle_time if v.custom_max_idle_time is None else v.custom_max_idle_time
-            print(v, v.check_health(), v.get_time_idle(), max_idle_time)
+            print(v, v.check_health(), v.get_time_idle(), v.get_max_idle_time())
             if (
                 (
                     not v.check_health()
                 ) or (
-                    remove_idle and v.get_time_idle() > max_idle_time
+                    remove_idle and v.get_time_idle() > v.get_max_idle_time()
                 )
             ):
                 del v
@@ -273,7 +272,7 @@ class InstanceManager:
             shm_size="12G",
         )
 
-        instance = LlmInstance(config['model_alias'], port, api_key, container, config.get('custom_max_idle_time', None))
+        instance = LlmInstance(config['model_alias'], port, api_key, container, config.get('custom_max_idle_time', self._default_idle_time))
 
         # Make sure container started
         # TODO make dynamic startup check
