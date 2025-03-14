@@ -12,7 +12,7 @@ CFG = load_global_config()['manager_config']
 manager = InstanceManager(
     "./llm_docker_configs",
     max_memory_thr=CFG['max_used_memory_per_gpu'],
-    max_idle_time=CFG['max_idle_time']
+    default_idle_time=CFG['default_idle_time']
 )
 
 

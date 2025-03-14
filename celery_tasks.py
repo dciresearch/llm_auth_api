@@ -100,12 +100,51 @@ class VllmTask(Task):
         extra_body = {k: v for k, v in request_json.items() if k not in valid_args}
         request_json = {k: v for k, v in request_json.items() if k in valid_args}
         request_json['extra_body'] = extra_body
+
+        stream = request_json.get('stream', False)
         try:
-            res = generation_func(**request_json)
-            res = res.json()
-        except:
+            if not stream:
+                res = generation_func(**request_json)
+                res = res.json()
+            else:
+                return self.process_streaming_chunk(generation_func, request_json)
+        except Exception as e:
+            print(e)
             res = make_error("Unexpected server error occured")
         return res
+    
+    def process_streaming_chunk(self, generation_func, request_json):
+        redis = celery_app.backend.client
+        
+        # Ключ для хранения чанков в Redis
+        stream_key = f"stream:{self.request.id}"
+        
+        # Очищаем предыдущие данные, если они есть
+        redis.delete(stream_key)
+        
+        # Устанавливаем начальное состояние
+        redis.hset(stream_key, "status", "STARTED")
+        
+        # Счетчик для чанков
+        chunk_index = 0
+        for chunk in generation_func(**request_json):
+            chunk_data = json.dumps(chunk.model_dump())
+            
+            # Сохраняем чанк в Redis
+            redis.hset(stream_key, f"chunk:{chunk_index}", str(chunk_data))
+            redis.hset(stream_key, "last_chunk", str(chunk_index))
+            redis.hset(stream_key, "status", "PROGRESS")
+            
+            # Обновляем TTL ключа (10 минут)
+            redis.expire(stream_key, 600)
+            
+            chunk_index += 1
+        
+        # Устанавливаем статус завершения
+        redis.hset(stream_key, "status", "COMPLETED")
+        print("Streaming task completed successfully")
+        return {"status": "COMPLETED", "chunks": chunk_index}
+
 
     def chat_completion(self, request_json):
         return self.any_completion(request_json, interface_type='chat')
@@ -123,7 +162,6 @@ class VllmTask(Task):
 @celery_app.task(base=VllmTask, bind=True, acks_late=True)
 def send_vllm_request(self, request_json):
     # logger.info(request_json)
-
     command = request_json['command']
     request_json = request_json.get('args', None)
 

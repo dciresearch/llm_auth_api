@@ -72,11 +72,12 @@ def get_gpu_breakdown(gpu_needed):
 
 
 class LlmInstance:
-    def __init__(self, model_alias: str, vllm_port: int, api_key: str, container: Container):
+    def __init__(self, model_alias: str, vllm_port: int, api_key: str, container: Container, max_idle_time: int):
         self.model_alias = model_alias
         self.vllm_port = vllm_port
         self.api_key = api_key
         self.container = container
+        self.max_idle_time = max_idle_time
 
         self.time_created = time.time()
         self.last_accessed = time.time()
@@ -100,6 +101,9 @@ class LlmInstance:
     def get_time_idle(self):
         return (time.time()-self.last_accessed) // 60
 
+    def get_max_idle_time(self):
+        return self.max_idle_time
+
     def __del__(self):
         try:
             self.container.stop()
@@ -110,7 +114,7 @@ class LlmInstance:
 class InstanceManager:
     def __init__(
         self, config_directory: str, port_range=DEFAULT_PORT_RANGE,
-        max_memory_thr=USED_MEMORY_THRESHOLD, max_idle_time=120
+        max_memory_thr=USED_MEMORY_THRESHOLD, default_idle_time=120
     ):
         self._store: Dict[str, LlmInstance] = {}
         self._known_configs: Dict[str, Dict[str, Any]] = {}
@@ -119,7 +123,7 @@ class InstanceManager:
         assert self._config_dir.exists(), "config_directory can't be found, please check the path"
         port_ranges = tuple(map(int, port_range.split('-')))
         self._known_ports = set(range(*port_ranges))
-        self._max_idle_time = max_idle_time
+        self._default_idle_time = default_idle_time
         self._load_or_update_library()
         self.API_KEY = str(uuid.uuid4())
         self.discard_memory_thr = max_memory_thr
@@ -209,12 +213,12 @@ class InstanceManager:
     def remove_idle_or_crashed_instances(self, remove_idle=True):
         for k in list(self._store.keys()):
             v = self._store[k]
-            print(v, v.check_health(), v.get_time_idle(), self._max_idle_time)
+            print(v, v.check_health(), v.get_time_idle(), v.get_max_idle_time())
             if (
                 (
                     not v.check_health()
                 ) or (
-                    remove_idle and v.get_time_idle() > self._max_idle_time
+                    remove_idle and v.get_time_idle() > v.get_max_idle_time()
                 )
             ):
                 del v
@@ -232,7 +236,7 @@ class InstanceManager:
         gpu_ids = list(map(str, gpu_ids))
         return gpu_ids
 
-    def spawn_docker(self, config: Dict[str, Any], startup_time: int = 60):
+    def spawn_docker(self, config: Dict[str, Any], startup_time: int = 30, retry_count: int = 5):
         gpu_ids = self.get_gpu_ids(config)
         # No gpus to spawn new docker
         if not gpu_ids:
@@ -268,11 +272,14 @@ class InstanceManager:
             shm_size="12G",
         )
 
-        instance = LlmInstance(config['model_alias'], port, api_key, container)
+        instance = LlmInstance(config['model_alias'], port, api_key, container, config.get('custom_max_idle_time', self._default_idle_time))
 
         # Make sure container started
         # TODO make dynamic startup check
-        time.sleep(startup_time)
+        while not instance.check_health() and retry_count:
+            time.sleep(startup_time)
+            retry_count -= 1
+
         if not instance.check_health():
             del instance
             return False
