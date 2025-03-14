@@ -57,9 +57,9 @@ async def post_to_queue(raw_request, command):
         request_json = None
     request_json = {"command": command, "args": request_json}
     task = send_vllm_request.apply_async(
-            args=[request_json], priority=priority,
-            expires=TIME_TO_EXPIRE,  # datetime.datetime.now(tz=pytz.timezone('Etc/GMT+2')) + timedelta(seconds=5),
-        )
+        args=[request_json], priority=priority,
+        expires=TIME_TO_EXPIRE,  # datetime.datetime.now(tz=pytz.timezone('Etc/GMT+2')) + timedelta(seconds=5),
+    )
     stream_task_id = task.task_id
     if not stream:
         res = await wait_for_task(task)
@@ -69,63 +69,64 @@ async def post_to_queue(raw_request, command):
             # Получаем Redis-соединение
             redis = celery_app.backend.client
             stream_key = f"stream:{stream_task_id}"
-            
+
             # Ожидаем начала выполнения задачи
-            #time.sleep(0.1)
+            # time.sleep(0.1)
             await asyncio.sleep(0.1)
             # Последний обработанный чанк
             last_processed = -1
-            
+
             # Максимальное время ожидания (30 секунд)
             max_wait_time = 180
             start_time = time.time()
-            
+
             while time.time() - start_time < max_wait_time:
                 # Проверяем статус
                 status = redis.hget(stream_key, "status")
-                
+
                 if not status:
                     # Ключ еще не создан, ждем
-                    #time.sleep(0.1)
+                    # time.sleep(0.1)
                     await asyncio.sleep(0.1)
                     continue
-                
+
                 status = status.decode('utf-8')
-                
+
                 if status == "FAILED":
                     error = redis.hget(stream_key, "error")
                     print(f"Streaming failed: {error}")
                     break
-                
+
                 # Получаем индекс последнего чанка
                 last_chunk_str = redis.hget(stream_key, "last_chunk")
                 if last_chunk_str:
                     last_chunk = int(last_chunk_str.decode('utf-8'))
-                    
+
                     # Обрабатываем новые чанки
                     for i in range(last_processed + 1, last_chunk + 1):
                         chunk_data = redis.hget(stream_key, f"chunk:{i}")
                         if chunk_data:
                             chunk_json = chunk_data.decode('utf-8')
-                            #print(f"Sending chunk: {chunk_json}")
+                            # print(f"Sending chunk: {chunk_json}")
                             yield f"data: {chunk_json}\n\n"
-                            #yield f"data: {chunk_data.decode('utf-8')}\n\n"
-                    
+                            # yield f"data: {chunk_data.decode('utf-8')}\n\n"
+
                     # Обновляем последний обработанный чанк
                     last_processed = last_chunk
-                
+
                 # Если задача завершена и все чанки обработаны
                 if status == "COMPLETED" and last_processed == last_chunk:
                     break
-                
-                #time.sleep(0.05)
+
+                # time.sleep(0.05)
                 await asyncio.sleep(0.05)
-            
+
             yield "data: [DONE]\n\n"
         return StreamingResponse(
             generate(),
             media_type="text/event-stream"
         )
+
 
 @router.get("/health")
 async def health(raw_request: Request):
@@ -233,6 +234,7 @@ def extract_auth_token(request):
         return None
     return request.headers.get("Authorization").removeprefix("Bearer ")
 
+
 class LoggingIterator:
     def __init__(self, iterator, request_dict, user_id):
         self.iterator = iterator
@@ -283,7 +285,8 @@ class LoggingIterator:
                 if self.response_dict is not None:
                     if 'delta' in self.response_dict['choices'][0]:
                         assert len(self.response_dict['choices']) == 1
-                        self.response_dict['choices'][0]['message'] = copy.deepcopy(self.response_dict['choices'][0]['delta'])
+                        self.response_dict['choices'][0]['message'] = copy.deepcopy(
+                            self.response_dict['choices'][0]['delta'])
                         del self.response_dict['choices'][0]['delta']
                         self.response_dict['choices'][0]['message']['content'] = self.data
                         self.response_dict['choices'][0]['finish_reason'] = self.last_finish_reason
@@ -294,6 +297,7 @@ class LoggingIterator:
                 print(e)
                 pass
             raise
+
 
 @app.middleware("http")
 async def authentication(request: Request, call_next):
@@ -317,7 +321,7 @@ async def authentication(request: Request, call_next):
     else:
         response = await to_fastapi_response(response)
         response_dict = json.loads(response.body)
-        if 'status_code' not in response_dict and request_dict['body'] is not None:
+        if response_dict is not None and 'status_code' not in response_dict and request_dict['body'] is not None:
             model_name = request_dict['body'].get('model', None)
             api_db.save_response(request_dict, response_dict, user_id, model_name)
 
