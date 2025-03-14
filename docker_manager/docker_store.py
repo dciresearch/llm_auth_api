@@ -159,7 +159,7 @@ class InstanceManager:
         spawned_model_names = set(self._store.keys())
         model_lens = [self._known_configs[mn]['extra_args'].get('max_model_len', None) for mn in model_names]
         status = ["spawned" if mn in spawned_model_names else "offloaded" for mn in model_names]
-        return list(zip(model_names, model_lens, status))
+        return sorted(zip(model_names, model_lens, status), key=lambda x: (x[2] == "offloaded", x[1]))
 
     def fetch_spawned_models(self):
         self.remove_idle_or_crashed_instances()
