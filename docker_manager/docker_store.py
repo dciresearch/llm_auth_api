@@ -1,3 +1,4 @@
+import dataclasses
 import requests
 from docker.errors import NotFound, APIError
 import uuid
@@ -16,6 +17,33 @@ def read_json_config(path):
     with open(path) as f:
         res = json.load(f)
         return res
+
+
+@dataclasses.dataclass(init=False)
+class VllmConfig:
+    model_parent_dir: str
+    model_name: str
+    model_alias: str
+    gpu_needed: int = 1
+    min_util: float = 0.95
+    max_model_len: int = -1
+    extra_args: dict = lambda: {}
+    max_idle_time = None
+
+    def __init__(self, **kwargs):
+        names = set([f.name for f in dataclasses.fields(self)])
+        for k, v in kwargs.items():
+            if k in names:
+                setattr(self, k, v)
+        self.max_model_len = self.extra_args.get("max_model_len", self.max_model_len)
+
+    @classmethod
+    def from_path(cls, path):
+        config = read_vllm_config(path)
+        return cls(**config)
+
+    def __getitem__(self, key):
+        return getattr(self, key)
 
 
 def read_vllm_config(path):
@@ -139,7 +167,7 @@ class InstanceManager:
         max_memory_thr=USED_MEMORY_THRESHOLD, default_idle_time=120
     ):
         self._store: Dict[str, VllmInstance] = {}
-        self._known_configs: Dict[str, Dict[str, Any]] = {}
+        self._known_configs: Dict[str,  VllmConfig] = {}
         self._config_stamps: Dict[str, float] = {}
         self._config_dir = Path(config_directory)
         assert self._config_dir.exists(), "config_directory can't be found, please check the path"
@@ -177,8 +205,8 @@ class InstanceManager:
             ch_time = p.lstat().st_mtime
             recorded_ch_time = self._config_stamps.get(config_path_str, None)
             if recorded_ch_time != ch_time:
-                config = read_vllm_config(p)
-                self._known_configs[config['model_alias']] = config
+                config: VllmConfig = VllmConfig.from_path(p)
+                self._known_configs[config.model_alias] = config
                 self._config_stamps[config_path_str] = ch_time
         return
 
@@ -186,14 +214,14 @@ class InstanceManager:
         self._load_or_update_library()
         model_names = sorted(self._known_configs.keys())
         spawned_model_names = set(self._store.keys())
-        model_lens = [self._known_configs[mn]['extra_args'].get('max_model_len', None) for mn in model_names]
+        model_lens = [self._known_configs[mn].max_model_len for mn in model_names]
         status = ["spawned" if mn in spawned_model_names else "offloaded" for mn in model_names]
         return sorted(zip(model_names, model_lens, status), key=lambda x: (x[2] == "offloaded", x[1]))
 
     def fetch_spawned_models(self):
         self.remove_idle_or_crashed_instances()
         model_names = sorted(self._store.keys())
-        model_lens = [self._known_configs[mn]['extra_args'].get('max_model_len', None) for mn in model_names]
+        model_lens = [self._known_configs[mn].max_model_len for mn in model_names]
         return list(zip(model_names, model_lens))
 
     def try_spawn_by_alias(self, model_alias):
@@ -214,7 +242,7 @@ class InstanceManager:
         # Try removing idle containers to free up space
         if not gpu_ids:
             self.remove_idle_or_crashed_instances()
-        print(f"Found gpus {gpu_ids} for {config['model_alias']}. Spawning...")
+        print(f"Found gpus {gpu_ids} for {config.model_alias}. Spawning...")
         spawned = self.spawn_docker(config)
         return spawned
 
@@ -255,35 +283,35 @@ class InstanceManager:
             v = self._store.pop(k)
             del v
 
-    def get_gpu_ids(self, config):
-        gpu_ids = find_gpu_ids(config["gpu_needed"], self.discard_memory_thr)
+    def get_gpu_ids(self, config: VllmConfig):
+        gpu_ids = find_gpu_ids(config.gpu_needed, self.discard_memory_thr)
         if gpu_ids is None:
             return []
         gpu_ids = list(map(str, gpu_ids))
         return gpu_ids
 
-    def spawn_docker(self, config: Dict[str, Any], startup_time: int = 20, retry_count: int = 6):
+    def spawn_docker(self, config: VllmConfig, startup_time: int = 20, retry_count: int = 6):
         gpu_ids = self.get_gpu_ids(config)
         # No gpus to spawn new docker
         if not gpu_ids:
             return False
         gpu = docker.types.DeviceRequest(device_ids=gpu_ids, capabilities=[['gpu']])
-        tp, pp = get_gpu_breakdown(config["gpu_needed"])
+        tp, pp = get_gpu_breakdown(config.gpu_needed)
 
         port = self.get_vacant_port()
 
         mount = docker.types.Mount(
-            target=DEFAULT_DOCKER_MODEL_DIR, source=config['model_parent_dir'], type='bind'
+            target=DEFAULT_DOCKER_MODEL_DIR, source=config.model_parent_dir, type='bind'
         )
 
-        extra_args = " ".join(f"--{k} {v}" for k, v in config["extra_args"].items())
+        extra_args = " ".join(f"--{k} {v}" for k, v in config.extra_args.items())
 
         api_key = self.API_KEY
-        command = f"--model {DEFAULT_DOCKER_MODEL_DIR}/{config['model_name']} --tensor-parallel-size {tp} --pipeline-parallel-size {pp} --gpu-memory-utilization {config['min_util']} {extra_args} --api-key {api_key}"
+        command = f"--model {DEFAULT_DOCKER_MODEL_DIR}/{config.model_name} --tensor-parallel-size {tp} --pipeline-parallel-size {pp} --gpu-memory-utilization {config.min_util} {extra_args} --api-key {api_key}"
 
         client = docker.from_env()
 
-        name_str = f"{self.prefix}__{config['model_alias']}"
+        name_str = f"{self.prefix}__{config.model_alias}"
 
         container = client.containers.run(
             DEFAULT_VLLM_DOCKER_NAME,
@@ -298,9 +326,9 @@ class InstanceManager:
             shm_size="12G",
         )
 
-        idle_limit = config.get('max_idle_time', self._default_idle_time)
+        idle_limit = config.max_idle_time if config.max_idle_time is not None else self._default_idle_time
 
-        instance = VllmInstance(config['model_alias'], port, api_key, container,
+        instance = VllmInstance(config.model_alias, port, api_key, container,
                                 idle_limit)
 
         # Make sure container started
