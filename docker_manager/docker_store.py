@@ -123,7 +123,7 @@ class VllmInstance:
         self._last_accessed = time.time()
 
     def check_health(self):
-        print(self.container.status)
+        # print(self.container.status)
         try:
             self.container.reload()
         except NotFound:
@@ -159,6 +159,13 @@ class VllmInstance:
 
     def __del__(self):
         self.stop_container()
+
+
+SERVER_ERORR_PATTERN = "{} Please consult your server administrator."
+
+
+def make_server_error(error_text):
+    return SERVER_ERORR_PATTERN.format(error_text)
 
 
 class InstanceManager:
@@ -228,7 +235,7 @@ class InstanceManager:
         # Check if model_alias is registered in the system
         self._load_or_update_library()
         if model_alias not in self._known_configs:
-            return False
+            return (False, f"{model_alias} is not registered in Config libriary.")
         config = self._known_configs[model_alias]
 
         # Remove lost dockers
@@ -253,10 +260,15 @@ class InstanceManager:
                 None,
                 None
             )
-        self.try_spawn_by_alias(model_alias)
+        spawned = self.try_spawn_by_alias(model_alias)
+        error = None
         if model_alias not in self._store:
+            error = f"{model_alias} can't be deployed at this time."
+        if isinstance(spawned, tuple):
+            _, error = spawned
+        if error is not None:
             return (
-                f"{model_alias} can't be deployed at this time. Please consult your server administrator.",
+                make_server_error(error),
                 None,
                 None
             )
@@ -294,7 +306,7 @@ class InstanceManager:
         gpu_ids = self.get_gpu_ids(config)
         # No gpus to spawn new docker
         if not gpu_ids:
-            return False
+            return (False, "Not enough vacant GPU to spawn Container at this time.")
         gpu = docker.types.DeviceRequest(device_ids=gpu_ids, capabilities=[['gpu']])
         tp, pp = get_gpu_breakdown(config.gpu_needed)
 
@@ -313,18 +325,21 @@ class InstanceManager:
 
         name_str = f"{self.prefix}__{config.model_alias}"
 
-        container = client.containers.run(
-            DEFAULT_VLLM_DOCKER_NAME,
-            command=command,
-            name=name_str,
-            detach=True,
-            auto_remove=True,
-            tty=True,
-            mounts=[mount],
-            ports={8000: port},
-            device_requests=[gpu],
-            shm_size="12G",
-        )
+        try:
+            container = client.containers.run(
+                DEFAULT_VLLM_DOCKER_NAME,
+                command=command,
+                name=name_str,
+                detach=True,
+                auto_remove=True,
+                tty=True,
+                mounts=[mount],
+                ports={8000: port},
+                device_requests=[gpu],
+                shm_size="12G",
+            )
+        except Exception as e:
+            return (False, str(e))
 
         idle_limit = config.max_idle_time if config.max_idle_time is not None else self._default_idle_time
 
@@ -339,7 +354,7 @@ class InstanceManager:
 
         if not instance.check_health():
             del instance
-            return False
+            return (False, "Failed to start due to Container internal error.")
 
         self.track_new_instance(instance)
         return True
