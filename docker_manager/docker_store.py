@@ -122,14 +122,24 @@ class VllmInstance:
     def reset_access_timer(self):
         self._last_accessed = time.time()
 
-    def check_health(self):
-        # print(self.container.status)
+    def check_api_health(self):
+        return is_vllm_up(self.port)
+
+    def container_exists(self):
         try:
             self.container.reload()
+            return True
         except NotFound:
             return False
-        if self.container.status == 'running':
-            return is_vllm_up(self.port)
+
+    def check_container_health(self):
+        if self.container_exists():
+            return self.container.status == 'running'
+
+    def check_health(self):
+        # print(self.container.status)
+        if self.check_container_health():
+            return self.check_api_health()
         return False
 
     @property
@@ -207,6 +217,7 @@ class InstanceManager:
         self._store[instance.model_alias] = instance
 
     def _load_or_update_library(self):
+
         for p in self._config_dir.glob("*json"):
             config_path_str = p.as_posix()
             ch_time = p.lstat().st_mtime
@@ -223,7 +234,7 @@ class InstanceManager:
         spawned_model_names = set(self._store.keys())
         model_lens = [self._known_configs[mn].max_model_len for mn in model_names]
         status = ["spawned" if mn in spawned_model_names else "offloaded" for mn in model_names]
-        return sorted(zip(model_names, model_lens, status), key=lambda x: (x[2] == "offloaded", x[1]))
+        return sorted(zip(model_names, model_lens, status), key=lambda x: (x[2] == "offloaded", -x[1]))
 
     def fetch_spawned_models(self):
         self.remove_idle_or_crashed_instances()
@@ -348,7 +359,7 @@ class InstanceManager:
 
         # Make sure container started
         # TODO make dynamic startup check
-        while not instance.check_health() and retry_count:
+        while instance.container_exists() and not instance.check_api_health() and retry_count:
             time.sleep(startup_time)
             retry_count -= 1
 
