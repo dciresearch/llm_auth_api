@@ -112,39 +112,38 @@ class VllmTask(Task):
             print(e)
             res = make_error("Unexpected server error occured")
         return res
-    
+
     def process_streaming_chunk(self, generation_func, request_json):
         redis = celery_app.backend.client
-        
+
         # Ключ для хранения чанков в Redis
         stream_key = f"stream:{self.request.id}"
-        
+
         # Очищаем предыдущие данные, если они есть
         redis.delete(stream_key)
-        
+
         # Устанавливаем начальное состояние
         redis.hset(stream_key, "status", "STARTED")
-        
+
         # Счетчик для чанков
         chunk_index = 0
         for chunk in generation_func(**request_json):
             chunk_data = json.dumps(chunk.model_dump())
-            
+
             # Сохраняем чанк в Redis
             redis.hset(stream_key, f"chunk:{chunk_index}", str(chunk_data))
             redis.hset(stream_key, "last_chunk", str(chunk_index))
             redis.hset(stream_key, "status", "PROGRESS")
-            
+
             # Обновляем TTL ключа (10 минут)
             redis.expire(stream_key, 600)
-            
+
             chunk_index += 1
-        
+
         # Устанавливаем статус завершения
         redis.hset(stream_key, "status", "COMPLETED")
         print("Streaming task completed successfully")
         return {"status": "COMPLETED", "chunks": chunk_index}
-
 
     def chat_completion(self, request_json):
         return self.any_completion(request_json, interface_type='chat')

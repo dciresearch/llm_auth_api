@@ -65,8 +65,10 @@ class Database:
         new_key = get_key_hash(new_key)
         return new_key
 
-    def register_new_user(self, user_name, priority):
-        new_key = self.generate_user_key(user_name, priority)
+    def register_new_user(self, user_name: str, priority: int, key: Optional[str] = None):
+        new_key = key
+        if new_key is None:
+            new_key = self.generate_user_key(user_name, priority)
         exists, _, _ = self.check_user_key(new_key)
         if not exists:
             with self.Session() as session:

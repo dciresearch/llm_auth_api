@@ -1,3 +1,5 @@
+from src.utils import ttl_classcache
+import asyncio
 import dataclasses
 import requests
 from docker.errors import NotFound, APIError
@@ -178,6 +180,9 @@ def make_server_error(error_text):
     return SERVER_ERORR_PATTERN.format(error_text)
 
 
+spawner_lock = asyncio.Lock()
+
+
 class InstanceManager:
     def __init__(
         self, config_directory: str, port_range=DEFAULT_PORT_RANGE,
@@ -216,6 +221,7 @@ class InstanceManager:
     def track_new_instance(self, instance: VllmInstance):
         self._store[instance.model_alias] = instance
 
+    @ttl_classcache(ttl=10)
     def _load_or_update_library(self):
 
         for p in self._config_dir.glob("*json"):
@@ -228,7 +234,7 @@ class InstanceManager:
                 self._config_stamps[config_path_str] = ch_time
         return
 
-    def fetch_known_models(self):
+    async def fetch_known_models(self):
         self._load_or_update_library()
         model_names = sorted(self._known_configs.keys())
         spawned_model_names = set(self._store.keys())
@@ -242,36 +248,42 @@ class InstanceManager:
         model_lens = [self._known_configs[mn].max_model_len for mn in model_names]
         return list(zip(model_names, model_lens))
 
-    def try_spawn_by_alias(self, model_alias):
+    async def try_spawn_by_alias(self, model_alias):
+        # No need for spawning
+        if model_alias in self._store:
+            return True
         # Check if model_alias is registered in the system
         self._load_or_update_library()
         if model_alias not in self._known_configs:
             return (False, f"{model_alias} is not registered in Config libriary.")
-        config = self._known_configs[model_alias]
 
-        # Remove lost dockers
-        self.remove_idle_or_crashed_instances(remove_idle=False)
-        # No need for spawning
-        if model_alias in self._store:
-            return True
+        # TODO make gpuid-based lock
+        async with spawner_lock:
+            # in case the party has started
+            if model_alias in self._store:
+                return True
+            config = self._known_configs[model_alias]
 
-        # Check if we have gpus to spawn new docker
-        gpu_ids = self.get_gpu_ids(config)
-        # Try removing idle containers to free up space
-        if not gpu_ids:
-            self.remove_idle_or_crashed_instances()
-        print(f"Found gpus {gpu_ids} for {config.model_alias}. Spawning...")
-        spawned = self.spawn_docker(config)
-        return spawned
+            # Remove lost dockers
+            self.remove_idle_or_crashed_instances(remove_idle=False)
 
-    def fetch_instance_port(self, model_alias):
+            # Check if we have gpus to spawn new docker
+            gpu_ids = self.get_gpu_ids(config)
+            # Try removing idle containers to free up space
+            if not gpu_ids:
+                self.remove_idle_or_crashed_instances()
+            print(f"Found gpus {gpu_ids} for {config.model_alias}. Spawning...")
+            spawned = await self.spawn_docker(config)
+            return spawned
+
+    async def fetch_instance_port(self, model_alias):
         if model_alias not in self._known_configs:
             return (
                 f"{model_alias} is not registered in the system. Please check available models.",
                 None,
                 None
             )
-        spawned = self.try_spawn_by_alias(model_alias)
+        spawned = await self.try_spawn_by_alias(model_alias)
         error = None
         if model_alias not in self._store:
             error = f"{model_alias} can't be deployed at this time."
@@ -313,7 +325,7 @@ class InstanceManager:
         gpu_ids = list(map(str, gpu_ids))
         return gpu_ids
 
-    def spawn_docker(self, config: VllmConfig, startup_time: int = 20, retry_count: int = 6):
+    async def spawn_docker(self, config: VllmConfig, startup_time: int = 20, retry_count: int = 6):
         gpu_ids = self.get_gpu_ids(config)
         # No gpus to spawn new docker
         if not gpu_ids:
@@ -334,7 +346,8 @@ class InstanceManager:
 
         client = docker.from_env()
 
-        name_str = f"{self.prefix}__{config.model_alias}"
+        model_alias = config.model_alias.replace('/', '_')
+        name_str = f"{self.prefix}__{model_alias}"
 
         try:
             container = client.containers.run(
@@ -360,7 +373,7 @@ class InstanceManager:
         # Make sure container started
         # TODO make dynamic startup check
         while instance.container_exists() and not instance.check_api_health() and retry_count:
-            time.sleep(startup_time)
+            await asyncio.sleep(startup_time)
             retry_count -= 1
 
         if not instance.check_health():

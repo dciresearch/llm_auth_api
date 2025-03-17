@@ -31,7 +31,7 @@ signal.signal(signal.SIGINT, int_handler)
 
 @router.get("/library")
 async def fetch_spawned_model_list():
-    return {"models": manager.fetch_known_models()}
+    return {"models": await manager.fetch_known_models()}
 
 
 @router.get("/spawned")
@@ -41,7 +41,7 @@ async def fetch_spawned_model_list():
 
 @router.get("/models")
 async def fetch_model_port(model_name: str):
-    msg, port, api_key = manager.fetch_instance_port(model_name)
+    msg, port, api_key = await manager.fetch_instance_port(model_name)
     return {"message": msg, "port": port, "key": api_key}
 
 app = FastAPI()
