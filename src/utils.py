@@ -1,3 +1,5 @@
+from functools import lru_cache
+import time
 from fastapi import Request
 import functools
 import asyncio
@@ -53,6 +55,27 @@ async def extract_request_details(request):
     if raw_body:
         body = json.loads(raw_body)
     return {"url": request.url._url, "body": body}
+
+
+def get_ttl_hash(seconds=3600):
+    """Return the same value withing `seconds` time period"""
+    return round(time.time() / seconds)
+
+
+def ttl_classcache(ttl=5):
+    def ttl_cacher(func):
+        def wrapper(self, *args, **kwargs):
+            if not hasattr(self, "__ttl_cache"):
+                self.__ttl_cache = {}
+            fn = func.__name__
+            if fn not in self.__ttl_cache or time.time() - self.__ttl_cache[fn][0] > ttl:
+                cache = func(self, *args, **kwargs)
+                self.__ttl_cache[fn] = (time.time(), cache)
+                return cache
+            else:
+                return self.__ttl_cache[fn][1]
+        return wrapper
+    return ttl_cacher
 
 
 async def listen_for_disconnect(request: Request) -> None:
