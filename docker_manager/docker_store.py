@@ -10,7 +10,7 @@ import subprocess as sp
 import random
 import time
 from docker.models.containers import Container
-from typing import Union, Dict, Any
+from typing import Union, Dict, Any, List
 import json
 import docker
 
@@ -31,6 +31,7 @@ class VllmConfig:
     max_model_len: int = -1
     extra_args: dict = lambda: {}
     max_idle_time = None
+    tags: List[str] = []
 
     def __init__(self, **kwargs):
         names = set([f.name for f in dataclasses.fields(self)])
@@ -236,6 +237,8 @@ class InstanceManager:
 
     async def fetch_known_models(self):
         self._load_or_update_library()
+        # Remove lost dockers
+        self.remove_idle_or_crashed_instances(remove_idle=False)
         model_names = sorted(self._known_configs.keys())
         spawned_model_names = set(self._store.keys())
         model_lens = [self._known_configs[mn].max_model_len for mn in model_names]
