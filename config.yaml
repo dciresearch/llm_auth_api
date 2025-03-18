@@ -1,5 +1,5 @@
 manager_config:
-  default_idle_time: 600
+  default_idle_time: 10
   max_used_memory_per_gpu: 4000
 celery_config:
   rabitmq_port: 5672

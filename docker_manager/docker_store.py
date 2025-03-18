@@ -31,7 +31,7 @@ class VllmConfig:
     max_model_len: int = -1
     extra_args: dict = lambda: {}
     max_idle_time = None
-    tags: List[str] = []
+    tags: List[str] = lambda: []
 
     def __init__(self, **kwargs):
         names = set([f.name for f in dataclasses.fields(self)])
