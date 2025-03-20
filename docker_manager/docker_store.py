@@ -328,7 +328,7 @@ class InstanceManager:
         gpu_ids = list(map(str, gpu_ids))
         return gpu_ids
 
-    async def spawn_docker(self, config: VllmConfig, startup_time: int = 20, retry_count: int = 6):
+    async def spawn_docker(self, config: VllmConfig, startup_time: int = 20, retry_count: int = 10):
         gpu_ids = self.get_gpu_ids(config)
         # No gpus to spawn new docker
         if not gpu_ids:
