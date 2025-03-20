@@ -364,6 +364,7 @@ class InstanceManager:
                 ports={8000: port},
                 device_requests=[gpu],
                 shm_size="12G",
+                environment=["VLLM_USE_V1=0"]
             )
         except Exception as e:
             return (False, str(e))
