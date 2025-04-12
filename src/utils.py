@@ -1,3 +1,5 @@
+import re
+from http import HTTPStatus
 from functools import lru_cache
 import time
 from fastapi import Request
@@ -27,7 +29,21 @@ def shuffle_string(text, seed=1234):
     return "".join(tmp)
 
 
-def make_error(msg, code=401):
+OPENAI_ERROR_PATTERN = re.compile("Error code: (?:\d{3,4}) - (.+)")
+
+
+def extract_openai_error(text):
+    if isinstance(text, str) and text.startswith("Error code"):
+        text = OPENAI_ERROR_PATTERN.findall(text)[0]
+        if text.startswith("{"):
+            text = text.replace("{'", '{"').replace("':", '":').replace(
+                ", '", ', "').replace(": '", ': "').replace("', \"", '", "').replace(": None", ": null")
+            text = json.loads(text)["message"]
+    return text
+
+
+def make_error(msg, code=HTTPStatus.BAD_REQUEST):
+    msg = extract_openai_error(msg)
     json_dict = {
         'content': {"error": msg},
         'status_code': code
