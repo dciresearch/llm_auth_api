@@ -63,7 +63,9 @@ async def post_to_queue(raw_request, command):
     stream_task_id = task.task_id
     if not stream:
         res = await wait_for_task(task)
-        return json.loads(res)
+        res = json.loads(res)
+
+        return res
     else:
         async def generate():
             # Получаем Redis-соединение
@@ -80,6 +82,7 @@ async def post_to_queue(raw_request, command):
             max_wait_time = 180
             start_time = time.time()
 
+            status = "PENDING"
             while time.time() - start_time < max_wait_time:
                 # Проверяем статус
                 status = redis.hget(stream_key, "status")
@@ -93,8 +96,12 @@ async def post_to_queue(raw_request, command):
                 status = status.decode('utf-8')
 
                 if status == "FAILED":
-                    error = redis.hget(stream_key, "error")
+                    error = redis.hget(stream_key, "error").decode('utf-8')
                     print(f"Streaming failed: {error}")
+                    error = json.dumps(
+                        {"error": {'message': error}}
+                    )
+                    yield f"data: {error}\n\n"
                     break
 
                 # Получаем индекс последнего чанка
@@ -245,6 +252,7 @@ class LoggingIterator:
         self.response_dict = None
         self.last_finish_reason = None
         self.usage = 0
+        self.had_error = False
 
     def __aiter__(self):
         return self
@@ -258,9 +266,12 @@ class LoggingIterator:
                 if chunk_str.startswith('data: '):
                     if chunk_str.strip() != 'data: [DONE]':
                         msg = json.loads(chunk_str[len('data: '):])
-                        isgen = 'choices' in msg
-                        data_key = 'delta'
-                        self.usage += int(isgen)
+                        if 'error' in msg:
+                            self.had_error = True
+                        else:
+                            isgen = 'choices' in msg
+                            data_key = 'delta'
+                            self.usage += int(isgen)
                 else:
                     msg = json.loads(chunk_str)
                     isgen = 'choices' in msg
@@ -282,7 +293,7 @@ class LoggingIterator:
             return chunk
         except StopAsyncIteration:
             try:
-                if self.response_dict is not None:
+                if not self.had_error and self.response_dict is not None:
                     if 'delta' in self.response_dict['choices'][0]:
                         assert len(self.response_dict['choices']) == 1
                         self.response_dict['choices'][0]['message'] = copy.deepcopy(
@@ -321,6 +332,11 @@ async def authentication(request: Request, call_next):
     else:
         response = await to_fastapi_response(response)
         response_dict = json.loads(response.body)
+        if "status_code" in response_dict and response_dict["status_code"] >= 400:
+            return JSONResponse(
+                content=response_dict['content']['error'],
+                status_code=response_dict["status_code"]
+            )
         if response_dict is not None and 'status_code' not in response_dict and request_dict['body'] is not None:
             model_name = request_dict['body'].get('model', None)
             api_db.save_response(request_dict, response_dict, user_id, model_name)

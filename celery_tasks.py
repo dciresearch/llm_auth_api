@@ -1,3 +1,4 @@
+from src.utils import ttl_classcache
 from openai import APIConnectionError
 import requests
 import json
@@ -7,7 +8,7 @@ from celery import Celery, Task
 from time import sleep
 from openai import OpenAI
 from kombu import Exchange, Queue
-from src.utils import load_global_config, make_error
+from src.utils import load_global_config, make_error, extract_openai_error
 import logging
 
 CFG = load_global_config()['celery_config']
@@ -88,7 +89,11 @@ class VllmTask(Task):
 
     def any_completion(self, request_json, interface_type='chat'):
         client = self.get_client(request_json)
+        stream = request_json.get('stream', False)
+
         if isinstance(client, str):
+            if stream:
+                self.make_streaming_error(client)
             return client
 
         if interface_type == 'chat':
@@ -101,7 +106,6 @@ class VllmTask(Task):
         request_json = {k: v for k, v in request_json.items() if k in valid_args}
         request_json['extra_body'] = extra_body
 
-        stream = request_json.get('stream', False)
         try:
             if not stream:
                 res = generation_func(**request_json)
@@ -110,8 +114,16 @@ class VllmTask(Task):
                 return self.process_streaming_chunk(generation_func, request_json)
         except Exception as e:
             print(e)
-            res = make_error("Unexpected server error occured")
+            res = make_error(str(e))
         return res
+
+    def make_streaming_error(self, error):
+        redis = celery_app.backend.client
+        stream_key = f"stream:{self.request.id}"
+        error = {"message": error}
+        chunk_data = json.dumps(error)
+        redis.hset(stream_key, "error", str(chunk_data))
+        redis.hset(stream_key, "status", "FAILED")
 
     def process_streaming_chunk(self, generation_func, request_json):
         redis = celery_app.backend.client
@@ -127,23 +139,29 @@ class VllmTask(Task):
 
         # Счетчик для чанков
         chunk_index = 0
-        for chunk in generation_func(**request_json):
-            chunk_data = json.dumps(chunk.model_dump())
+        try:
+            for chunk in generation_func(**request_json):
+                chunk_data = json.dumps(chunk.model_dump())
 
-            # Сохраняем чанк в Redis
-            redis.hset(stream_key, f"chunk:{chunk_index}", str(chunk_data))
-            redis.hset(stream_key, "last_chunk", str(chunk_index))
-            redis.hset(stream_key, "status", "PROGRESS")
+                # Сохраняем чанк в Redis
+                redis.hset(stream_key, f"chunk:{chunk_index}", str(chunk_data))
+                redis.hset(stream_key, "last_chunk", str(chunk_index))
+                redis.hset(stream_key, "status", "PROGRESS")
 
-            # Обновляем TTL ключа (10 минут)
-            redis.expire(stream_key, 600)
+                # Обновляем TTL ключа (10 минут)
+                redis.expire(stream_key, 600)
 
-            chunk_index += 1
+                chunk_index += 1
 
-        # Устанавливаем статус завершения
-        redis.hset(stream_key, "status", "COMPLETED")
-        print("Streaming task completed successfully")
-        return {"status": "COMPLETED", "chunks": chunk_index}
+            # Устанавливаем статус завершения
+            redis.hset(stream_key, "status", "COMPLETED")
+            print("Streaming task completed successfully")
+            return {"status": "COMPLETED", "chunks": chunk_index}
+        except Exception as e:
+            chunk_data = extract_openai_error(str(e))
+            redis.hset(stream_key, "error", str(chunk_data))
+            redis.hset(stream_key, "status", "FAILED")
+            return {"status": "FAILED", "chunks": chunk_index}
 
     def chat_completion(self, request_json):
         return self.any_completion(request_json, interface_type='chat')
