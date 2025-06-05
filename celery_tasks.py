@@ -1,5 +1,5 @@
-from src.utils import ttl_classcache
-from openai import APIConnectionError
+from src.utils import ttl_classcache, get_url
+from openai import APIConnectionError, OpenAIError
 import requests
 import json
 from fastapi.responses import JSONResponse
@@ -34,15 +34,15 @@ celery_app.control.rate_limit('celery_tasks.send_vllm_request', '100/s')
 logger = logging.getLogger(__name__)
 
 
-def fetch_client_by_port(port, api_key=None):
+def fetch_client_by_url(url, api_key=None):
     openai_api_key = api_key
     if openai_api_key is None:
         openai_api_key = "EMPTY"
-    openai_api_base = f"http://localhost:{port}/v1"
+    openai_api_base = f"{url}/v1"
     client = OpenAI(api_key=openai_api_key, base_url=openai_api_base)
     try:
         model_list = client.models.list()
-    except APIConnectionError:
+    except (APIConnectionError, OpenAIError):
         return None, None
     client_name = model_list.data[0].id
     return client, client_name
@@ -53,9 +53,16 @@ class VllmTask(Task):
         self._clients = None
         self._models = []
         self.manager_port = CFG['manager_port']
+        self.manager_host = CFG['manager_host']
+        if self.manager_host is None:
+            self.manager_host = "localhost"
+        if self.manager_host.startswith("http"):
+            self.manager_host = self.manager_host.split("//", maxsplit=1)[1]
+        self.manager_url = get_url(self.manager_host, self.manager_port)
 
     def query_manager(self, query_type, **kwargs):
-        url = f"http://localhost:{self.manager_port}/{query_type}"
+        url = f"{self.manager_url}/{query_type}"
+        print(url)
         res = requests.get(url, params=kwargs).json()
         return res
 
@@ -77,13 +84,19 @@ class VllmTask(Task):
         """Get OpenAI client by fetching appropriate port as well
         as fix the request_json to match client model.
         """
-        model_name = request_json['model']
-        res = self.query_manager('models', model_name=model_name)
-        if res['port'] is None:
+        model_alias = request_json['model']
+        res = self.query_manager('models', model_alias=model_alias)
+        if res['url'] is None:
             return make_error(res["message"])
-        client, c_name = fetch_client_by_port(res['port'], res['key'])
+
+        # Since we get raw response the local ports of docker manager
+        # would be passed as the local ports of this celery machine
+        # which won't be correct if docker manager is remote
+        res['url'] = res['url'].replace("localhost", self.manager_host)
+
+        client, c_name = fetch_client_by_url(res['url'], res['key'])
         if client is None:
-            return make_error("Client may be respawning. Please repeat your request later.")
+            return make_error("Client may be respawning or remote url is not available. Please repeat your request later.")
         request_json['model'] = c_name
         return client
 

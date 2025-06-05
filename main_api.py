@@ -332,13 +332,14 @@ async def authentication(request: Request, call_next):
     else:
         response = await to_fastapi_response(response)
         response_dict = json.loads(response.body)
-        if "status_code" in response_dict and response_dict["status_code"] >= 400:
-            return JSONResponse(
-                content=response_dict['content']['error'],
-                status_code=response_dict["status_code"]
-            )
-        if response_dict is not None and 'status_code' not in response_dict and request_dict['body'] is not None:
-            model_name = request_dict['body'].get('model', None)
-            api_db.save_response(request_dict, response_dict, user_id, model_name)
+        if response_dict is not None:
+            if "status_code" in response_dict and response_dict["status_code"] >= 400:
+                return JSONResponse(
+                    content=response_dict['content']['error'],
+                    status_code=response_dict["status_code"]
+                )
+            if 'status_code' not in response_dict and request_dict['body'] is not None:
+                model_name = request_dict['body'].get('model', None)
+                api_db.save_response(request_dict, response_dict, user_id, model_name)
 
     return response

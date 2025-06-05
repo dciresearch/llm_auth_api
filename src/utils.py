@@ -94,6 +94,14 @@ def ttl_classcache(ttl=5):
     return ttl_cacher
 
 
+def get_url(host, port=None):
+    assert host is not None, "host is required"
+    assert port is None or int(port), "port must be either None, int or str(int)"
+    if port is None:
+        port = ""
+    return f"http://{host}:{port}".removesuffix(":")
+
+
 async def listen_for_disconnect(request: Request) -> None:
     """Returns if a disconnect message is received"""
     while True:
