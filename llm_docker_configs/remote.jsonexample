@@ -1,0 +1,6 @@
+{
+    "config_type": "vllm",
+    "model_alias": "ANY_MODEL_ALIAS_TO_SHOW_IN_API",
+    "remote_url": "http://url:port_if_needed",
+    "remote_key": "OPENAI_API_KEY"
+}
