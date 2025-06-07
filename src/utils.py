@@ -102,6 +102,13 @@ def get_url(host, port=None):
     return f"http://{host}:{port}".removesuffix(":")
 
 
+def get_port_from_url(url):
+    try:
+        return int(url.rsplit(":")[1].split("/")[0])
+    except:
+        return None
+
+
 async def listen_for_disconnect(request: Request) -> None:
     """Returns if a disconnect message is received"""
     while True:
