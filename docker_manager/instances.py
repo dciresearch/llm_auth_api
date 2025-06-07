@@ -3,6 +3,8 @@ from typing import Union, Dict, Any, List, Tuple
 import time
 from docker.errors import NotFound, APIError
 import requests
+import re
+from src.utils import get_port_from_url
 
 
 class DockerInstance:
@@ -24,6 +26,10 @@ class DockerInstance:
 
     def check_api_health(self):
         return True
+
+    @property
+    def port(self):
+        return get_port_from_url(self.api_url)
 
     @property
     def is_virtual(self):
