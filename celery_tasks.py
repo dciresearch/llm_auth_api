@@ -10,6 +10,7 @@ from openai import OpenAI
 from kombu import Exchange, Queue
 from src.utils import load_global_config, make_error, extract_openai_error
 import logging
+import httpx
 
 CFG = load_global_config()['celery_config']
 
@@ -29,7 +30,8 @@ celery_app.conf.worker_prefetch_multiplier = 1
 celery_app.conf.update(
     timezone='GMT',
 )
-celery_app.control.rate_limit('celery_tasks.send_vllm_request', '100/s')
+celery_app.control.rate_limit('celery_tasks.send_vllm_request', '1000/s')
+celery_app.backend.client.flushdb()
 
 logger = logging.getLogger(__name__)
 
@@ -39,12 +41,19 @@ def fetch_client_by_url(url, api_key=None):
     if openai_api_key is None:
         openai_api_key = "EMPTY"
     openai_api_base = f"{url}/v1"
-    client = OpenAI(api_key=openai_api_key, base_url=openai_api_base)
+    timeout = httpx.Timeout(
+        timeout=1800,
+        connect=5.0
+    )
+    client = OpenAI(api_key=openai_api_key, base_url=openai_api_base, max_retries=0, timeout=timeout)
     try:
         model_list = client.models.list()
     except (APIConnectionError, OpenAIError):
         return None, None
-    client_name = model_list.data[0].id
+    if len(model_list.data) == 1:
+        client_name = model_list.data[0].id
+    else:
+        client_name = None
     return client, client_name
 
 
@@ -80,11 +89,8 @@ class VllmTask(Task):
     def clients(self):
         return self._clients
 
-    def get_client(self, request_json):
-        """Get OpenAI client by fetching appropriate port as well
-        as fix the request_json to match client model.
-        """
-        model_alias = request_json['model']
+    # @ttl_classcache(ttl=30)
+    def fetch_client(self, model_alias):
         res = self.query_manager('models', model_alias=model_alias)
         if res['url'] is None:
             return make_error(res["message"])
@@ -95,9 +101,30 @@ class VllmTask(Task):
         res['url'] = res['url'].replace("localhost", self.manager_host)
 
         client, c_name = fetch_client_by_url(res['url'], res['key'])
+        return client, c_name
+
+    def get_client(self, request_json):
+        """Get OpenAI client by fetching appropriate port as well
+        as fix the request_json to match client model.
+        """
+        model_alias = request_json['model']
+        client, c_name = self.fetch_client(model_alias)
+
+        # res = self.query_manager('models', model_alias=model_alias)
+        # if res['url'] is None:
+        #     return make_error(res["message"])
+
+        # # Since we get raw response the local ports of docker manager
+        # # would be passed as the local ports of this celery machine
+        # # which won't be correct if docker manager is remote
+        # res['url'] = res['url'].replace("localhost", self.manager_host)
+
+        # client, c_name = fetch_client_by_url(res['url'], res['key'])
+
         if client is None:
             return make_error("Client may be respawning or remote url is not available. Please repeat your request later.")
-        request_json['model'] = c_name
+        if c_name is not None:
+            request_json['model'] = c_name
         return client
 
     def any_completion(self, request_json, interface_type='chat'):

@@ -29,7 +29,7 @@ def get_gpu_breakdown(gpu_needed):
     return tp, pp
 
 
-def get_vllm_docker_spawn_args(config: VllmConfig, ports, API_KEY):
+def get_vllm_docker_spawn_args(config: VllmConfig, ports, API_KEY, docker_name = 'vllm_server'):
     args = DockerLaunchArgs(config.model_alias)
     if config.remote_url is not None:
         args.api_url = config.remote_url
@@ -37,7 +37,7 @@ def get_vllm_docker_spawn_args(config: VllmConfig, ports, API_KEY):
         config.gpu_needed = 0
         return args
 
-    args.docker_name = 'vllm_server'
+    args.docker_name = docker_name
 
     mount = docker.types.Mount(
         target="/workdir/models", source=config.model_parent_dir, type='bind'
@@ -51,13 +51,16 @@ def get_vllm_docker_spawn_args(config: VllmConfig, ports, API_KEY):
 
     tp, pp = get_gpu_breakdown(config.gpu_needed)
     extra_args = " ".join(f"--{k} {v}" for k, v in config.extra_args.items())
-    args.command = f"--model /workdir/models/{config.model_name} --tensor-parallel-size {tp} --pipeline-parallel-size {pp} --gpu-memory-utilization {config.min_util} {extra_args} --api-key {args.api_key}"
+    args.command = f"--model /workdir/models/{config.model_name} --tensor-parallel-size {tp} --pipeline-parallel-size {pp} --gpu-memory-utilization {config.min_util} {extra_args} --api-key {args.api_key} --max_num_seqs 256"
     if not config.use_v1:
         args.env_args = ["VLLM_USE_V1=0"]
 
     return args
 
+def get_vllm_docker_spawn_args_experimental(*args, **kwargs):
+    return get_vllm_docker_spawn_args(*args, **kwargs, docker_name = "vllm/vllm-openai:nightly")
 
 spawner_scripts = {
-    "vllm_default": get_vllm_docker_spawn_args
+    "vllm_default": get_vllm_docker_spawn_args,
+    "vllm_experimental": get_vllm_docker_spawn_args_experimental
 }
