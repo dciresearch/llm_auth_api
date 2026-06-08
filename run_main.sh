@@ -1,5 +1,6 @@
 #!/bin/bash
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+mkdir -p "${SCRIPT_DIR}/database"
 docker run --rm -it --name main --gpus all --network host \
   --mount "src=${SCRIPT_DIR},target=/workdir,type=bind" \
   -v /var/run/docker.sock:/var/run/docker.sock \
