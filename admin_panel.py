@@ -89,7 +89,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   button.btn-green { background: var(--green); }
   button.btn-small { padding: 3px 10px; font-size: 12px; }
   .actions { display: flex; gap: 4px; }
-  .key-cell { max-width: 120px; overflow: hidden; text-overflow: ellipsis;
+  .key-cell { max-width: 200px; overflow: hidden; text-overflow: ellipsis;
               white-space: nowrap; font-family: monospace; font-size: 11px; }
   .stats { display: flex; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
   .stat { background: var(--card); border: 1px solid var(--border); border-radius: 8px;
@@ -121,7 +121,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <tr>
   <th>ID</th>
   <th>Name</th>
-  <th>Key (hover to copy)</th>
+  <th>Key</th>
   <th>Priority</th>
   <th>Active</th>
   <th>Created</th>
@@ -141,7 +141,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <tr data-id="{{ u.id }}">
   <td>{{ u.id }}</td>
   <td><input type="text" value="{{ u.user_name }}" data-field="user_name" style="width:120px"></td>
-  <td class="key-cell" title="{{ u.user_key }}">{{ u.user_key[:16] }}...</td>
+  <td class="key-cell"><span title="{{ u.user_key }}">{{ u.user_key[:16] }}...</span> <button class="btn-small" onclick="copyKey('{{ u.user_key }}', this)" title="Copy full key">Copy</button></td>
   <td><input type="number" value="{{ u.priority }}" data-field="priority" style="width:60px" min="0" max="10"></td>
   <td>
     {% if u.is_active %}
@@ -192,6 +192,24 @@ function flash(msg, ok) {
   const el = document.getElementById('flash');
   el.innerHTML = `<div class="flash ${ok ? 'flash-ok' : 'flash-err'}">${msg}</div>`;
   setTimeout(() => el.innerHTML = '', 3500);
+}
+
+function copyKey(key, btn) {
+  navigator.clipboard.writeText(key).then(() => {
+    const orig = btn.textContent;
+    btn.textContent = 'Copied!';
+    setTimeout(() => btn.textContent = orig, 1500);
+  }).catch(() => {
+    const ta = document.createElement('textarea');
+    ta.value = key;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    const orig = btn.textContent;
+    btn.textContent = 'Copied!';
+    setTimeout(() => btn.textContent = orig, 1500);
+  });
 }
 
 function getRowData(id) {
