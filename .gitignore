@@ -4,3 +4,4 @@ database/*
 redis_data/*
 *.tar
 llm_docker_configs/*.json
+llm_docker_configs/*.hidden
