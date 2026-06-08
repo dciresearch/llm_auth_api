@@ -224,6 +224,24 @@ class InstanceManager:
         for k in list(self._store.keys()):
             self.purge_instance(k)
 
+    @staticmethod
+    def _collect_container_diag(container):
+        lines = []
+        try:
+            container.reload()
+            lines.append(f"status={container.status}")
+        except Exception as e:
+            lines.append(f"status=unknown ({e})")
+        try:
+            logs = container.logs(tail=50).decode("utf-8", errors="replace")
+            if logs.strip():
+                lines.append(f"logs (last 50 lines):\n{logs}")
+            else:
+                lines.append("logs: <empty>")
+        except Exception as e:
+            lines.append(f"logs: unavailable ({e})")
+        return "\n".join(lines)
+
     async def spawn_docker(self, config: GenericDockerConfig, startup_time: int = 20, retry_count: int = 20):
         args_builder = spawner_scripts[config.spawn_script]
 
@@ -285,8 +303,11 @@ class InstanceManager:
             retry_count -= 1
 
         if not instance.check_health():
+            diag = self._collect_container_diag(container)
+            logger.error("Container %s failed to start.\n%s", config.model_alias, diag)
+            instance.stop_container()
             del instance
-            return (False, "Failed to start due to Container internal error.")
+            return (False, f"Failed to start. {diag}")
 
         self.track_new_instance(instance)
         return True
