@@ -226,43 +226,49 @@ class InstanceManager:
 
     async def spawn_docker(self, config: GenericDockerConfig, startup_time: int = 20, retry_count: int = 20):
         args_builder = spawner_scripts[config.spawn_script]
+
+        # Remote configs don't need local GPUs or ports
+        if config.remote_url is not None:
+            args = args_builder(config, [], self.API_KEY)
+            instance_cls = instance_types[config.config_type]
+            instance = instance_cls(
+                config.alias, args.api_url, args.api_key,
+                None, -1
+            )
+            if not instance.check_health():
+                return (False, "Remote model is not reachable.")
+            self.track_new_instance(instance)
+            return True
+
         gpu_ids = self.get_gpu_ids(config.gpu_needed)
-        # No gpus to spawn new docker
         if not gpu_ids:
             return (False, "Not enough vacant GPU to spawn Container at this time.")
         gpu = docker.types.DeviceRequest(device_ids=gpu_ids, capabilities=[['gpu']])
 
         ports = self.get_vacant_ports(config.ports_needed)
+        args = args_builder(config, ports, self.API_KEY)
 
-        args = args_builder(
-            config, ports, self.API_KEY
-        )
+        client = docker.from_env()
+        name_str = f"{self.prefix}__{args.instance_name}"
+        try:
+            container = client.containers.run(
+                args.docker_name,
+                command=args.command,
+                name=name_str,
+                detach=True,
+                auto_remove=True,
+                tty=True,
+                mounts=args.mounts,
+                ports=args.port_map,
+                device_requests=[gpu],
+                shm_size="12G",
+                environment=args.env_args,
+                labels={"manager_instance_id": self.instance_id}
+            )
+        except Exception as e:
+            return (False, str(e))
 
-        if args.docker_name is None:
-            container = None
-            idle_limit = -1
-        else:
-            client = docker.from_env()
-            name_str = f"{self.prefix}__{args.instance_name}"
-            try:
-                container = client.containers.run(
-                    args.docker_name,
-                    command=args.command,
-                    name=name_str,
-                    detach=True,
-                    auto_remove=True,
-                    tty=True,
-                    mounts=args.mounts,
-                    ports=args.port_map,
-                    device_requests=[gpu],
-                    shm_size="12G",
-                    environment=args.env_args,
-                    labels={"manager_instance_id": self.instance_id}
-                )
-            except Exception as e:
-                return (False, str(e))
-
-            idle_limit = config.max_idle_time if config.max_idle_time is not None else self._default_idle_time
+        idle_limit = config.max_idle_time if config.max_idle_time is not None else self._default_idle_time
 
         instance_cls = instance_types[config.config_type]
         instance = instance_cls(

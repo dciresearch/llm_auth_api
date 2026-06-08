@@ -99,7 +99,8 @@ class VllmTask(Task):
     def fetch_client(self, model_alias):
         res = self.query_manager('models', model_alias=model_alias)
         if res['url'] is None:
-            return make_error(res["message"])
+            logger.warning("Model %s unavailable: %s", model_alias, res.get("message"))
+            return None, None
 
         # Since we get raw response the local ports of docker manager
         # would be passed as the local ports of this celery machine
