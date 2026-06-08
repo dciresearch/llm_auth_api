@@ -273,13 +273,18 @@ class LoggingIterator:
                         self.response_dict['choices'][0]['finish_reason'] = self.last_finish_reason
                         self.response_dict['usage'] = {'completion_tokens': self.usage}
 
+                    # Fallback: if model didn't report usage in streaming, use our counter
+                    effective_completion = self.completion_tokens or self.usage
+                    effective_total = self.total_tokens or effective_completion
+
                     api_db.save_response(
                         self.request_dict, self.response_dict, self.user_id, self.model_name,
-                        prompt_tokens=self.prompt_tokens, completion_tokens=self.completion_tokens,
-                        total_tokens=self.total_tokens,
+                        prompt_tokens=self.prompt_tokens, completion_tokens=effective_completion,
+                        total_tokens=effective_total,
                     )
-                    if self.total_tokens:
-                        api_db.increment_token_usage(self.user_id, self.total_tokens)
+                    if effective_total:
+                        api_db.increment_token_usage(self.user_id, effective_total)
+                        await rate_limiter.increment(self.user_id, effective_total)
             except Exception as e:
                 logger.warning("Failed to save response log: %s", e, exc_info=True)
             raise
