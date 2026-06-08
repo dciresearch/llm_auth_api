@@ -250,7 +250,7 @@ class LoggingIterator:
                     data_key = 'message'
 
                 if isgen:
-                    self.data += msg['choices'][0][data_key]['content']
+                    self.data += msg['choices'][0][data_key].get('content') or ''
                     self.last_finish_reason = msg['choices'][0]['finish_reason']
                     if 'model' in msg:
                         if self.model_name is None:
