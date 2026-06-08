@@ -166,7 +166,7 @@ class Database:
         new_key = key
         if new_key is None:
             new_key = self.generate_user_key(user_name, priority)
-        exists, _, _, _ = self.check_user_key(new_key)
+        exists, *_ = self.check_user_key(new_key)
         if not exists:
             now_ts = self.get_current_ts()
             with self.Session() as session:
