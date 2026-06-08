@@ -1,16 +1,19 @@
 import logging
+import json
 from datetime import datetime, timezone
 from fastapi import FastAPI, Request, Depends, HTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from src.api_database import Database, UserAuth
 from src.utils import load_global_config
+import httpx
 
 logger = logging.getLogger(__name__)
 
 CFG = load_global_config()
 ADMIN_SECRET = CFG.get('admin_config', {}).get('admin_secret', '')
 ADMIN_PORT = CFG.get('admin_config', {}).get('admin_port', 6334)
+APP_PORT = CFG.get('celery_config', {}).get('app_port', 1234)
 db_path = "./database/generic.db"
 api_db = Database(db_path)
 
@@ -103,10 +106,39 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   @keyframes fadeOut { 0%,70% { opacity:1; } 100% { opacity:0; } }
   .new-row td { background: var(--hover); }
   .new-row input { background: var(--card); }
+  .tabs { display: flex; gap: 4px; margin-bottom: 20px; }
+  .tab-btn { background: var(--card); color: var(--muted); border: 1px solid var(--border);
+             border-radius: 6px 6px 0 0; padding: 8px 20px; cursor: pointer; font-size: 14px; font-weight: 600; }
+  .tab-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+  .pg-row { display: flex; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; align-items: flex-end; }
+  .pg-field { display: flex; flex-direction: column; gap: 4px; }
+  .pg-field label { font-size: 12px; color: var(--muted); }
+  .pg-field input, .pg-field select, .pg-field textarea { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 6px 10px; font-size: 13px; }
+  .pg-field textarea { width: 100%; min-height: 80px; resize: vertical; font-family: inherit; }
+  .pg-field select { min-width: 200px; }
+  .pg-chat { background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+             padding: 16px; min-height: 300px; max-height: 600px; overflow-y: auto; margin-bottom: 12px; }
+  .pg-msg { margin-bottom: 12px; }
+  .pg-msg-role { font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--muted); margin-bottom: 2px; }
+  .pg-msg-content { white-space: pre-wrap; font-size: 14px; line-height: 1.5; }
+  .pg-msg-user .pg-msg-role { color: var(--accent); }
+  .pg-msg-assistant .pg-msg-role { color: var(--green); }
+  .pg-msg-error .pg-msg-role { color: var(--red); }
+  .pg-params { display: flex; gap: 12px; flex-wrap: wrap; }
+  .pg-params .pg-field input[type="number"] { width: 80px; }
+  .pg-params .pg-field input[type="range"] { width: 120px; }
 </style>
 </head>
 <body>
 <h1>LLM Auth API — Admin Panel</h1>
+<div class="tabs">
+  <button class="tab-btn active" onclick="switchTab('tokens')">Tokens</button>
+  <button class="tab-btn" onclick="switchTab('playground')">Playground</button>
+</div>
+
+<div id="tab-tokens" class="tab-content active">
 <div class="stats">
   <div class="stat"><div class="stat-value">{{ total_users }}</div><div class="stat-label">Total tokens</div></div>
   <div class="stat"><div class="stat-value">{{ active_users }}</div><div class="stat-label">Active</div></div>
@@ -183,6 +215,56 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 </tr>
 </tbody>
 </table>
+</div>
+</div>
+
+<div id="tab-playground" class="tab-content">
+  <div class="card">
+    <div class="pg-row">
+      <div class="pg-field" style="flex:1">
+        <label>Token</label>
+        <input type="text" id="pg-token" placeholder="Enter API token">
+      </div>
+      <div class="pg-field">
+        <label>&nbsp;</label>
+        <button onclick="pgLoadModels()">Load Models</button>
+      </div>
+    </div>
+    <div class="pg-row">
+      <div class="pg-field" style="flex:1">
+        <label>Model</label>
+        <select id="pg-model"><option value="">-- load models first --</option></select>
+      </div>
+    </div>
+    <div class="pg-params">
+      <div class="pg-field">
+        <label>Temperature</label>
+        <input type="number" id="pg-temp" value="0.7" min="0" max="2" step="0.1">
+      </div>
+      <div class="pg-field">
+        <label>Max tokens</label>
+        <input type="number" id="pg-max-tokens" value="512" min="1" max="32768">
+      </div>
+      <div class="pg-field">
+        <label>Top-p</label>
+        <input type="number" id="pg-top-p" value="1.0" min="0" max="1" step="0.05">
+      </div>
+      <div class="pg-field">
+        <label>Stream</label>
+        <input type="checkbox" id="pg-stream" checked style="width:auto">
+      </div>
+    </div>
+  </div>
+  <div id="pg-chat" class="pg-chat"></div>
+  <div class="pg-row">
+    <div class="pg-field" style="flex:1">
+      <textarea id="pg-input" placeholder="Type your message..." rows="3"></textarea>
+    </div>
+    <div class="pg-field">
+      <button class="btn-green" onclick="pgSend()" id="pg-send-btn">Send</button>
+      <button onclick="pgClear()" style="margin-top:4px">Clear</button>
+    </div>
+  </div>
 </div>
 
 <div id="flash"></div>
@@ -273,6 +355,143 @@ async function createToken() {
   if (r.ok) { flash('Token created', true); location.reload(); }
   else { const j = await r.json(); flash(j.detail || 'Error', false); }
 }
+
+function switchTab(tab) {
+  document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+  document.getElementById('tab-' + tab).classList.add('active');
+  event.target.classList.add('active');
+}
+
+const pgMessages = [];
+
+async function pgLoadModels() {
+  const token = document.getElementById('pg-token').value.trim();
+  if (!token) { flash('Enter a token first', false); return; }
+  try {
+    const r = await fetch('/api/playground/models?token=' + encodeURIComponent(token));
+    const j = await r.json();
+    const sel = document.getElementById('pg-model');
+    sel.innerHTML = '';
+    if (j.error) { sel.innerHTML = '<option value="">Error: ' + (j.error.message || j.error) + '</option>'; return; }
+    const models = j.data || [];
+    if (!models.length) { sel.innerHTML = '<option value="">No models available</option>'; return; }
+    models.forEach(m => {
+      const opt = document.createElement('option');
+      opt.value = m.id;
+      opt.textContent = m.id + (m.status ? ' (' + m.status + ')' : '');
+      sel.appendChild(opt);
+    });
+    flash('Loaded ' + models.length + ' models', true);
+  } catch(e) { flash('Failed to load models: ' + e.message, false); }
+}
+
+function pgAppendMsg(role, content) {
+  const chat = document.getElementById('pg-chat');
+  const div = document.createElement('div');
+  div.className = 'pg-msg pg-msg-' + role;
+  div.innerHTML = '<div class="pg-msg-role">' + role + '</div><div class="pg-msg-content"></div>';
+  div.querySelector('.pg-msg-content').textContent = content;
+  chat.appendChild(div);
+  chat.scrollTop = chat.scrollHeight;
+  return div;
+}
+
+function pgUpdateMsg(div, content) {
+  div.querySelector('.pg-msg-content').textContent = content;
+  document.getElementById('pg-chat').scrollTop = document.getElementById('pg-chat').scrollHeight;
+}
+
+async function pgSend() {
+  const token = document.getElementById('pg-token').value.trim();
+  const model = document.getElementById('pg-model').value;
+  const msg = document.getElementById('pg-input').value.trim();
+  if (!token || !model || !msg) { flash('Token, model and message required', false); return; }
+
+  const temperature = parseFloat(document.getElementById('pg-temp').value) || 0.7;
+  const maxTokens = parseInt(document.getElementById('pg-max-tokens').value) || 512;
+  const topP = parseFloat(document.getElementById('pg-top-p').value) || 1.0;
+  const stream = document.getElementById('pg-stream').checked;
+
+  pgMessages.push({role: 'user', content: msg});
+  pgAppendMsg('user', msg);
+  document.getElementById('pg-input').value = '';
+  document.getElementById('pg-send-btn').disabled = true;
+
+  const body = {
+    token, model, messages: pgMessages,
+    temperature, max_tokens: maxTokens, top_p: topP, stream
+  };
+
+  try {
+    if (stream) {
+      const resp = await fetch('/api/playground/chat', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body)
+      });
+      if (!resp.ok) {
+        const err = await resp.json();
+        const errDetail = err.detail || err.error?.message || JSON.stringify(err);
+        pgAppendMsg('error', errDetail);
+        pgMessages.pop();
+        return;
+      }
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      const msgDiv = pgAppendMsg('assistant', '');
+      let fullText = '';
+      let buffer = '';
+      while (true) {
+        const {done, value} = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, {stream: true});
+        const lines = buffer.split('\n');
+        buffer = lines.pop();
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const data = line.slice(6).trim();
+          if (data === '[DONE]') continue;
+          try {
+            const parsed = JSON.parse(data);
+            const delta = parsed.choices?.[0]?.delta?.content || '';
+            if (delta) fullText += delta;
+            pgUpdateMsg(msgDiv, fullText);
+          } catch(e) {}
+        }
+      }
+      pgMessages.push({role: 'assistant', content: fullText});
+    } else {
+      const r = await fetch('/api/playground/chat', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body)
+      });
+      const j = await r.json();
+      if (j.error) {
+        pgAppendMsg('error', j.error.message || JSON.stringify(j.error));
+        pgMessages.pop();
+      } else {
+        const content = j.choices?.[0]?.message?.content || JSON.stringify(j);
+        pgMessages.push({role: 'assistant', content});
+        pgAppendMsg('assistant', content);
+      }
+    }
+  } catch(e) {
+    pgAppendMsg('error', e.message);
+    pgMessages.pop();
+  }
+  document.getElementById('pg-send-btn').disabled = false;
+}
+
+function pgClear() {
+  pgMessages.length = 0;
+  document.getElementById('pg-chat').innerHTML = '';
+}
+
+document.getElementById('pg-input').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); pgSend(); }
+});
 </script>
 </body>
 </html>"""
@@ -390,3 +609,69 @@ async def api_update_user(user_id: int, request: Request, _=Depends(_check_auth)
 async def api_reset_usage(user_id: int, _=Depends(_check_auth)):
     api_db.reset_token_usage(user_id)
     return {"status": "ok"}
+
+
+@app.get("/api/playground/models")
+async def playground_models(token: str, _=Depends(_check_auth)):
+    async with httpx.AsyncClient(timeout=30) as client:
+        try:
+            r = await client.get(
+                f"http://localhost:{APP_PORT}/v1/models",
+                headers={"Authorization": f"Bearer {token}"}
+            )
+            return JSONResponse(content=r.json(), status_code=r.status_code)
+        except httpx.ConnectError:
+            return JSONResponse(content={"error": {"message": "Cannot connect to API server"}}, status_code=502)
+
+
+@app.post("/api/playground/chat")
+async def playground_chat(request: Request, _=Depends(_check_auth)):
+    data = await request.json()
+    token = data.pop("token", None)
+    if not token:
+        raise HTTPException(400, "token is required")
+
+    model = data.get("model")
+    messages = data.get("messages", [])
+    if not model or not messages:
+        raise HTTPException(400, "model and messages are required")
+
+    stream = data.get("stream", False)
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": data.get("temperature", 0.7),
+        "max_tokens": data.get("max_tokens", 512),
+        "top_p": data.get("top_p", 1.0),
+        "stream": stream,
+    }
+
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+    if stream:
+        async def stream_proxy():
+            async with httpx.AsyncClient(timeout=httpx.Timeout(300, connect=10)) as client:
+                try:
+                    async with client.stream(
+                        "POST",
+                        f"http://localhost:{APP_PORT}/v1/chat/completions",
+                        json=payload,
+                        headers=headers,
+                    ) as r:
+                        async for chunk in r.aiter_bytes():
+                            yield chunk
+                except httpx.ConnectError:
+                    yield b'data: {"error": {"message": "Cannot connect to API server"}}\n\n'
+
+        return StreamingResponse(stream_proxy(), media_type="text/event-stream")
+    else:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(300, connect=10)) as client:
+            try:
+                r = await client.post(
+                    f"http://localhost:{APP_PORT}/v1/chat/completions",
+                    json=payload,
+                    headers=headers,
+                )
+                return JSONResponse(content=r.json(), status_code=r.status_code)
+            except httpx.ConnectError:
+                return JSONResponse(content={"error": {"message": "Cannot connect to API server"}}, status_code=502)
