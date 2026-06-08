@@ -9,9 +9,12 @@ import random
 from docker.models.containers import Container
 from typing import Union, Dict, Any, List, Tuple
 import docker
+import logging
 from .instances import instance_types, DockerInstance
 from .spawn_logic import spawner_scripts
 from .config_patterns import GenericDockerConfig, AutoConfig
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_PORT_RANGE = "10240-10340"
 
@@ -45,11 +48,11 @@ def find_gpu_ids(gpu_needed, discard_memory_thr):
     return random.sample(vacant_gpu, gpu_needed)
 
 
-SERVER_ERORR_PATTERN = "{} Please consult your server administrator."
+SERVER_ERROR_PATTERN = "{} Please consult your server administrator."
 
 
 def make_server_error(error_text):
-    return SERVER_ERORR_PATTERN.format(error_text)
+    return SERVER_ERROR_PATTERN.format(error_text)
 
 
 spawner_lock = asyncio.Lock()
@@ -72,6 +75,7 @@ class InstanceManager:
         self._default_idle_time = default_idle_time
         self._load_or_update_library()
         self.API_KEY = str(uuid.uuid4())
+        self.instance_id = str(uuid.uuid4())[:8]
         self.discard_memory_thr = max_memory_thr
         self.prefix = "dockermanaged_vllm"
         self.remove_possible_orphans()
@@ -79,10 +83,12 @@ class InstanceManager:
     def remove_possible_orphans(self):
         client = docker.from_env()
         containers = client.containers.list()
-        print(containers)
         for c in containers:
             if c.name.startswith(self.prefix):
-                c.kill()
+                labels = c.labels or {}
+                if labels.get("manager_instance_id") == self.instance_id:
+                    logger.info("Killing orphan container: %s", c.name)
+                    c.kill()
 
     def get_allocated_ports(self):
         return {v.port for v in self._store.values()}
@@ -114,7 +120,7 @@ class InstanceManager:
                 try:
                     config: GenericDockerConfig = AutoConfig.from_path(p)
                 except Exception as e:
-                    print(e)
+                    logger.error("Failed to load config %s: %s", p, e)
                     continue
                 self._known_configs[config.alias] = config
                 self._config_stamps[config_path_str] = ch_time
@@ -158,12 +164,13 @@ class InstanceManager:
             # Remove lost dockers
             self.remove_idle_or_crashed_instances(remove_idle=False)
 
-            # Check if we have gpus to spawn new docker
-            gpu_ids = self.get_gpu_ids(config.gpu_needed)
-            # Try removing idle containers to free up space
-            if not gpu_ids:
-                self.remove_idle_or_crashed_instances()
-            print(f"Found gpus {gpu_ids} for {config.model_alias}. Spawning...")
+            # Check if we have gpus to spawn new docker (skip for remote configs)
+            if config.remote_url is None:
+                gpu_ids = self.get_gpu_ids(config.gpu_needed)
+                # Try removing idle containers to free up space
+                if not gpu_ids:
+                    self.remove_idle_or_crashed_instances()
+            logger.info("Spawning %s...", config.model_alias)
             # TODO add timeout spawn
             spawned = await self.spawn_docker(config)
             return spawned
@@ -176,7 +183,7 @@ class InstanceManager:
                 None
             )
         spawned = await self.try_spawn_by_alias(alias)
-        print(spawned)
+        logger.debug("Spawn result for %s: %s", alias, spawned)
         error = None
         if alias not in self._store:
             error = f"{alias} can't be deployed at this time."
@@ -190,13 +197,14 @@ class InstanceManager:
             )
         i = self._store[alias]
         i.reset_access_timer()
-        print(i.url)
+        logger.debug("Instance URL for %s: %s", alias, i.url)
         return ("OK", i.url, i.key)
 
     def remove_idle_or_crashed_instances(self, remove_idle=True):
         for k in list(self._store.keys()):
             v = self._store[k]
-            print(v, v.check_health(), v.get_time_idle(), v.max_idle_time, remove_idle and v.expired())
+            logger.debug("Instance %s: health=%s, idle=%s, max_idle=%s, remove_idle=%s, expired=%s",
+                         k, v.check_health(), v.get_time_idle(), v.max_idle_time, remove_idle, v.expired())
             if (
                 (
                     not v.check_health()
@@ -208,8 +216,9 @@ class InstanceManager:
                 self._store.pop(k)
 
     def purge_instance(self, k):
-        v = self._store.pop(k)
-        del v
+        v = self._store.pop(k, None)
+        if v is not None:
+            v.stop_container()
 
     def purge_all_instances(self):
         for k in list(self._store.keys()):
@@ -247,7 +256,8 @@ class InstanceManager:
                     ports=args.port_map,
                     device_requests=[gpu],
                     shm_size="12G",
-                    environment=args.env_args
+                    environment=args.env_args,
+                    labels={"manager_instance_id": self.instance_id}
                 )
             except Exception as e:
                 return (False, str(e))
@@ -260,10 +270,12 @@ class InstanceManager:
             container, idle_limit
         )
 
-        # Make sure container started
-        # TODO make dynamic startup check
+        # Make sure container started with exponential backoff
+        delay = 1
+        max_delay = startup_time
         while instance.container_exists() and not instance.check_api_health() and retry_count:
-            await asyncio.sleep(startup_time)
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, max_delay)
             retry_count -= 1
 
         if not instance.check_health():

@@ -1,6 +1,9 @@
 import json
 import dataclasses
+import logging
 from typing import Union, Dict, Any, List, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 def read_json_config(path):
@@ -23,20 +26,23 @@ class GenericDockerConfig:
     ports_needed: int = 1
     config_type: str = None
     max_idle_time = None
-    tags: List[str] = lambda: []
+    tags: List[str] = dataclasses.field(default_factory=list)
     remote_url: str = None
     remote_key: str = None
     spawn_script: str = None
 
     def __init__(self, **kwargs):
-        pass
+        names = {f.name for f in dataclasses.fields(self)}
+        for k, v in kwargs.items():
+            if k in names:
+                setattr(self, k, v)
 
     @classmethod
     def from_path(cls, path):
         try:
             config = read_config(path)
         except Exception as e:
-            print(e)
+            logger.error("Failed to read config from %s: %s", path, e)
             return
         return cls(**config)
 
@@ -51,7 +57,7 @@ class VllmConfig(GenericDockerConfig):
     model_parent_dir: str = None
     min_util: float = 0.95
     max_model_len: int = -1
-    extra_args: dict = lambda: {}
+    extra_args: dict = dataclasses.field(default_factory=dict)
     use_v1: bool = False
     spawn_script: str = "vllm_default"
     alias: str = None
@@ -72,18 +78,18 @@ config_type_map = {
 
 class AutoConfig:
     def __init__(self, **config):
-        raise EnvironmentError(f"{self.__class__.__name__} is designed to be instantiated ")
+        raise EnvironmentError(f"{self.__class__.__name__} is not designed to be instantiated directly")
 
     @classmethod
-    def from_config(self, config):
-        cls = config_type_map[config['config_type']]
-        return cls(**config)
+    def from_config(cls, config):
+        cfg_cls = config_type_map[config['config_type']]
+        return cfg_cls(**config)
 
     @classmethod
-    def from_path(self, path):
+    def from_path(cls, path):
         try:
             config = read_config(path)
         except Exception as e:
-            print(e)
+            logger.error("Failed to read config from %s: %s", path, e)
             return
-        return self.from_config(config)
+        return cls.from_config(config)

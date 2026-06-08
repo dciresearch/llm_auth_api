@@ -8,12 +8,15 @@ import asyncio
 from fastapi import Response
 import random
 import hashlib
+from pathlib import Path
 import yaml
 import json
 
+_CONFIG_PATH = Path(__file__).parent.parent / "config.yaml"
+
 
 def load_global_config():
-    with open("config.yaml") as f:
+    with open(_CONFIG_PATH) as f:
         cfg = yaml.load(f, Loader=yaml.FullLoader)
     return cfg
 
@@ -29,7 +32,7 @@ def shuffle_string(text, seed=1234):
     return "".join(tmp)
 
 
-OPENAI_ERROR_PATTERN = re.compile("Error code: (?:\d{3,4}) - (.+)")
+OPENAI_ERROR_PATTERN = re.compile(r"Error code: (?:\d{3,4}) - (.+)")
 
 
 def extract_openai_error(text):
@@ -69,7 +72,10 @@ async def extract_request_details(request):
     raw_body = await request.body()
     body = None
     if raw_body:
-        body = json.loads(raw_body)
+        try:
+            body = json.loads(raw_body)
+        except (json.JSONDecodeError, ValueError):
+            body = None
     return {"url": request.url._url, "body": body}
 
 
@@ -105,7 +111,7 @@ def get_url(host, port=None):
 def get_port_from_url(url):
     try:
         return int(url.rsplit(":")[1].split("/")[0])
-    except:
+    except (ValueError, IndexError, AttributeError):
         return None
 
 

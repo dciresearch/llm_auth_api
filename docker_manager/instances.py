@@ -57,11 +57,11 @@ class DockerInstance:
         return False
 
     @property
-    def url(self) -> Tuple[str, int]:
+    def url(self) -> str:
         return self.api_url
 
     @property
-    def key(self) -> int:
+    def key(self) -> str:
         return self.api_key
 
     @property
@@ -79,11 +79,18 @@ class DockerInstance:
     def stop_container(self):
         if self.container is None:
             return
-        while True:
+        for _ in range(3):
             try:
                 self.container.kill()
+                return
             except (NotFound, APIError):
-                break
+                return
+            except Exception:
+                pass
+        try:
+            self.container.remove(force=True)
+        except Exception:
+            pass
 
     def __del__(self):
         self.stop_container()
@@ -93,14 +100,14 @@ def is_vllm_up(url=None):
     try:
         r = requests.get(url=f'{url}/health')
         return r.status_code == 200
-    except:
+    except Exception:
         return False
 
 
 class VllmInstance(DockerInstance):
     def check_api_health(self):
         if self.is_virtual:
-            return True
+            return is_vllm_up(self.url)
         return is_vllm_up(self.url)
 
 

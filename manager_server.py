@@ -2,6 +2,7 @@ import atexit
 import sys
 import signal
 from fastapi import APIRouter, FastAPI, Request
+from fastapi.responses import JSONResponse
 from docker_manager.docker_store import InstanceManager
 from src.utils import load_global_config
 
@@ -9,6 +10,7 @@ from src.utils import load_global_config
 router = APIRouter()
 
 CFG = load_global_config()['manager_config']
+MANAGER_SECRET = CFG.get('manager_secret', '')
 manager = InstanceManager(
     "./llm_docker_configs",
     max_memory_thr=CFG['max_used_memory_per_gpu'],
@@ -46,3 +48,13 @@ async def fetch_model_url(model_alias: str):
 
 app = FastAPI()
 app.include_router(router)
+
+
+@app.middleware("http")
+async def manager_auth(request: Request, call_next):
+    if not MANAGER_SECRET:
+        return await call_next(request)
+    token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    if token != MANAGER_SECRET:
+        return JSONResponse(content={"error": "Unauthorized"}, status_code=401)
+    return await call_next(request)
