@@ -73,9 +73,8 @@ def _user_to_dict(u):
         "expires_at_input": datetime.fromtimestamp(u.expires_at, tz=MSK).strftime("%Y-%m-%dT%H:%M") if u.expires_at else "",
         "is_active": u.is_active,
         "total_tokens_used": u.total_tokens_used or 0,
+        "total_requests": u.total_requests or 0,
         "token_budget": u.token_budget,
-        "rate_limit_tokens_per_min": u.rate_limit_tokens_per_min,
-        "rate_limit_tokens_per_hour": u.rate_limit_tokens_per_hour,
         "rate_limit_tokens_per_day": u.rate_limit_tokens_per_day,
         "rate_limit_requests_per_min": u.rate_limit_requests_per_min,
     }

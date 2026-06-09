@@ -285,6 +285,7 @@ class LoggingIterator:
                     if effective_total:
                         api_db.increment_token_usage(self.user_id, effective_total)
                         await rate_limiter.increment(self.user_id, effective_total)
+                    api_db.increment_request_count(self.user_id)
             except Exception as e:
                 logger.warning("Failed to save response log: %s", e, exc_info=True)
             raise
@@ -362,5 +363,6 @@ async def authentication(request: Request, call_next):
                 if total_t:
                     api_db.increment_token_usage(user_id, total_t)
                     await rate_limiter.increment(user_id, total_t)
+                api_db.increment_request_count(user_id)
 
     return response

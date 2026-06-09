@@ -107,9 +107,8 @@
   <th>Expires</th>
   <th>Allowed Models</th>
   <th>Tokens Used</th>
+  <th>Requests</th>
   <th>Budget</th>
-  <th>Lim/min</th>
-  <th>Lim/hour</th>
   <th>Lim/day</th>
   <th>Req/min</th>
   <th>Actions</th>
@@ -133,9 +132,8 @@
   <td><input type="datetime-local" value="{{ u.expires_at_input }}" data-field="expires_at" style="width:170px"></td>
   <td><input type="text" value="{{ u.allowed_models or '' }}" data-field="allowed_models" placeholder="all" style="width:130px"></td>
   <td style="font-weight:600">{{ "{:,}".format(u.total_tokens_used) }}</td>
+  <td style="font-weight:600">{{ "{:,}".format(u.total_requests) }}</td>
   <td><input type="number" value="{{ u.token_budget or '' }}" data-field="token_budget" placeholder="unlimited" style="width:100px" min="0"></td>
-  <td><input type="number" value="{{ u.rate_limit_tokens_per_min or '' }}" data-field="rate_limit_tokens_per_min" placeholder="-" style="width:80px" min="0"></td>
-  <td><input type="number" value="{{ u.rate_limit_tokens_per_hour or '' }}" data-field="rate_limit_tokens_per_hour" placeholder="-" style="width:80px" min="0"></td>
   <td><input type="number" value="{{ u.rate_limit_tokens_per_day or '' }}" data-field="rate_limit_tokens_per_day" placeholder="-" style="width:80px" min="0"></td>
   <td><input type="number" value="{{ u.rate_limit_requests_per_min or '' }}" data-field="rate_limit_requests_per_min" placeholder="-" style="width:80px" min="0"></td>
   <td>
@@ -156,7 +154,7 @@
   <td><input type="text" id="new-name" placeholder="user name" style="width:120px"></td>
   <td><input type="text" id="new-key" placeholder="auto-generated" style="width:130px;font-size:11px"></td>
   <td><input type="number" id="new-priority" value="5" style="width:60px" min="0" max="10"></td>
-  <td colspan="11">
+  <td colspan="9">
     <button class="btn-green" onclick="createToken()">+ Create Token</button>
   </td>
 </tr>

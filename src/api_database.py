@@ -50,6 +50,7 @@ class UserAuth(Base):
     expires_at: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     is_active: Mapped[int] = mapped_column(Integer, default=1)
     total_tokens_used: Mapped[int] = mapped_column(Integer, default=0)
+    total_requests: Mapped[int] = mapped_column(Integer, default=0)
     token_budget: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     rate_limit_tokens_per_min: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     rate_limit_tokens_per_hour: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
@@ -92,6 +93,7 @@ class Database:
             'expires_at': f"ALTER TABLE user_auth_keys ADD COLUMN expires_at INTEGER DEFAULT {now_ts + six_months}",
             'is_active': "ALTER TABLE user_auth_keys ADD COLUMN is_active INTEGER DEFAULT 1",
             'total_tokens_used': "ALTER TABLE user_auth_keys ADD COLUMN total_tokens_used INTEGER DEFAULT 0",
+            'total_requests': "ALTER TABLE user_auth_keys ADD COLUMN total_requests INTEGER DEFAULT 0",
             'token_budget': "ALTER TABLE user_auth_keys ADD COLUMN token_budget INTEGER",
             'rate_limit_tokens_per_min': "ALTER TABLE user_auth_keys ADD COLUMN rate_limit_tokens_per_min INTEGER",
             'rate_limit_tokens_per_hour': "ALTER TABLE user_auth_keys ADD COLUMN rate_limit_tokens_per_hour INTEGER",
@@ -306,6 +308,14 @@ class Database:
             )
             session.commit()
 
+    def increment_request_count(self, user_id: int) -> None:
+        """Increment the total_requests counter for a user."""
+        with self.Session() as session:
+            session.query(UserAuth).filter(UserAuth.id == user_id).update(
+                {UserAuth.total_requests: UserAuth.total_requests + 1}
+            )
+            session.commit()
+
     def _serialize_content(self, content: Union[None, str, List[Dict[str, Any]]]) -> str:
         if isinstance(content, str):
             return content
@@ -332,8 +342,9 @@ class Database:
                 print(f"User {user_id} not found")
                 return
             user.total_tokens_used = 0
+            user.total_requests = 0
             session.commit()
-            print(f"User {user_id} total_tokens_used reset to 0")
+            print(f"User {user_id} total_tokens_used and total_requests reset to 0")
 
     def get_usage(self, user_id: int):
         """Get usage stats for a user."""
