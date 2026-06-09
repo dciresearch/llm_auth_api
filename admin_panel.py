@@ -223,6 +223,15 @@ async def playground_chat(request: Request, _=Depends(_check_auth)):
                         json=payload,
                         headers=headers,
                     ) as r:
+                        if r.status_code != 200:
+                            body = await r.aread()
+                            try:
+                                err = json.loads(body)
+                                err_msg = err.get("error", {}).get("message", body.decode())
+                            except Exception:
+                                err_msg = body.decode()
+                            yield f'data: {json.dumps({"error": {"message": err_msg}})}\n\n'.encode()
+                            return
                         async for chunk in r.aiter_bytes():
                             yield chunk
                 except httpx.ConnectError:
