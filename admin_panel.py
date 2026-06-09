@@ -18,6 +18,8 @@ CFG = load_global_config()
 ADMIN_SECRET = CFG.get('admin_config', {}).get('admin_secret', '')
 ADMIN_PORT = CFG.get('admin_config', {}).get('admin_port', 6334)
 APP_PORT = CFG.get('celery_config', {}).get('app_port', 1234)
+MANAGER_PORT = CFG.get('celery_config', {}).get('manager_port', 6333)
+MANAGER_SECRET = CFG.get('manager_config', {}).get('manager_secret', '')
 db_path = "./database/generic.db"
 api_db = Database(db_path)
 
@@ -170,6 +172,26 @@ async def api_update_user(user_id: int, request: Request, _=Depends(_check_auth)
 async def api_reset_usage(user_id: int, _=Depends(_check_auth)):
     api_db.reset_token_usage(user_id)
     return {"status": "ok"}
+
+
+
+@app.get("/api/available-models")
+async def available_models(_=Depends(_check_auth)):
+    """Get list of all known model aliases from manager_server."""
+    async with httpx.AsyncClient(timeout=10) as client:
+        try:
+            headers = {}
+            if MANAGER_SECRET:
+                headers["Authorization"] = f"Bearer {MANAGER_SECRET}"
+            r = await client.get(
+                f"http://localhost:{MANAGER_PORT}/library",
+                headers=headers,
+            )
+            data = r.json()
+            models = [m[0] for m in data.get("models", [])]
+            return {"models": models}
+        except Exception:
+            return {"models": []}
 
 
 @app.get("/api/playground/models")

@@ -76,6 +76,27 @@
   .pg-params { display: flex; gap: 12px; flex-wrap: wrap; }
   .pg-params .pg-field input[type="number"] { width: 80px; }
   .pg-params .pg-field input[type="range"] { width: 120px; }
+  .model-selector { position: relative; display: inline-block; }
+  .model-selector-btn { background: var(--bg); color: var(--text); border: 1px solid var(--border);
+                        border-radius: 4px; padding: 4px 8px; font-size: 13px; cursor: pointer;
+                        min-width: 130px; text-align: left; white-space: nowrap; overflow: hidden;
+                        text-overflow: ellipsis; }
+  .model-selector-btn:hover { border-color: var(--accent); }
+  .model-dropdown { display: none; position: absolute; z-index: 100; background: var(--card);
+                    border: 1px solid var(--border); border-radius: 6px; padding: 8px;
+                    min-width: 250px; max-height: 300px; overflow-y: auto; top: 100%; left: 0;
+                    box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+  .model-dropdown.open { display: block; }
+  .model-dropdown label { display: flex; align-items: center; gap: 6px; padding: 3px 4px;
+                          font-size: 13px; cursor: pointer; border-radius: 4px; }
+  .model-dropdown label:hover { background: var(--hover); }
+  .model-dropdown input[type="checkbox"] { width: auto; accent-color: var(--accent); }
+  .model-dropdown .mode-toggle { display: flex; gap: 4px; margin-bottom: 8px; padding-bottom: 8px;
+                                 border-bottom: 1px solid var(--border); }
+  .model-dropdown .mode-btn { flex: 1; padding: 4px 8px; font-size: 12px; font-weight: 600;
+                              border: 1px solid var(--border); border-radius: 4px; cursor: pointer;
+                              background: var(--bg); color: var(--muted); text-align: center; }
+  .model-dropdown .mode-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
 </style>
 </head>
 <body>
@@ -130,7 +151,18 @@
   </td>
   <td style="font-size:11px;white-space:nowrap">{{ u.created_at_str }}</td>
   <td><input type="datetime-local" value="{{ u.expires_at_input }}" data-field="expires_at" style="width:170px"></td>
-  <td><input type="text" value="{{ u.allowed_models or '' }}" data-field="allowed_models" placeholder="all" style="width:130px"></td>
+  <td>
+    <div class="model-selector" data-uid="{{ u.id }}" data-allowed="{{ u.allowed_models or '' }}">
+      <button class="model-selector-btn" onclick="toggleModelDropdown(this)">{{ 'all' if not u.allowed_models else 'custom' }}</button>
+      <div class="model-dropdown">
+        <div class="mode-toggle">
+          <button class="mode-btn {{ 'active' if not u.allowed_models else '' }}" onclick="setModelMode(this, 'all')">All</button>
+          <button class="mode-btn {{ 'active' if u.allowed_models else '' }}" onclick="setModelMode(this, 'custom')">Custom</button>
+        </div>
+        <div class="model-list"></div>
+      </div>
+    </div>
+  </td>
   <td style="font-weight:600">{{ "{:,}".format(u.total_tokens_used) }}</td>
   <td style="font-weight:600">{{ "{:,}".format(u.total_requests) }}</td>
   <td><input type="number" value="{{ u.token_budget or '' }}" data-field="token_budget" placeholder="unlimited" style="width:100px" min="0"></td>
@@ -243,6 +275,96 @@ function copyKey(key, btn) {
   });
 }
 
+let availableModels = [];
+
+async function loadAvailableModels() {
+  try {
+    const r = await fetch('/api/available-models');
+    const j = await r.json();
+    availableModels = j.models || [];
+    document.querySelectorAll('.model-selector').forEach(initModelSelector);
+  } catch(e) { console.error('Failed to load models:', e); }
+}
+
+function initModelSelector(sel) {
+  const list = sel.querySelector('.model-list');
+  const allowed = sel.dataset.allowed;
+  const isAll = !allowed;
+  const selected = isAll ? [] : JSON.parse(allowed || '[]');
+  list.innerHTML = '';
+  availableModels.forEach(m => {
+    const label = document.createElement('label');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.value = m;
+    cb.checked = isAll || selected.includes(m);
+    cb.disabled = isAll;
+    label.appendChild(cb);
+    label.appendChild(document.createTextNode(m));
+    list.appendChild(label);
+  });
+}
+
+function toggleModelDropdown(btn) {
+  const dropdown = btn.nextElementSibling;
+  document.querySelectorAll('.model-dropdown.open').forEach(d => {
+    if (d !== dropdown) d.classList.remove('open');
+  });
+  dropdown.classList.toggle('open');
+}
+
+function setModelMode(btn, mode) {
+  const dropdown = btn.closest('.model-dropdown');
+  const sel = btn.closest('.model-selector');
+  const btns = dropdown.querySelectorAll('.mode-btn');
+  btns.forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  const list = dropdown.querySelector('.model-list');
+  const checkboxes = list.querySelectorAll('input[type="checkbox"]');
+  if (mode === 'all') {
+    checkboxes.forEach(cb => { cb.checked = true; cb.disabled = true; });
+    sel.dataset.allowed = '';
+    sel.querySelector('.model-selector-btn').textContent = 'all';
+  } else {
+    checkboxes.forEach(cb => { cb.disabled = false; });
+    sel.dataset.allowed = JSON.stringify(availableModels);
+    sel.querySelector('.model-selector-btn').textContent = 'custom';
+  }
+}
+
+function onModelCheckboxChange(cb) {
+  const sel = cb.closest('.model-selector');
+  const dropdown = sel.querySelector('.model-dropdown');
+  const isAllMode = dropdown.querySelector('.mode-btn.active').textContent === 'All';
+  if (isAllMode) return;
+  const checked = [...dropdown.querySelectorAll('.model-list input:checked')].map(c => c.value);
+  sel.dataset.checked = JSON.stringify(checked);
+}
+
+function getModelSelectorData(id) {
+  const sel = document.querySelector(`.model-selector[data-uid="${id}"]`);
+  if (!sel) return {};
+  const dropdown = sel.querySelector('.model-dropdown');
+  const isAllMode = dropdown.querySelector('.mode-btn.active').textContent === 'All';
+  if (isAllMode) return { allowed_models: null };
+  const checked = [...dropdown.querySelectorAll('.model-list input:checked')].map(c => c.value);
+  return { allowed_models: checked.length === 0 ? null : JSON.stringify(checked) };
+}
+
+document.addEventListener('change', function(e) {
+  if (e.target.matches('.model-list input[type="checkbox"]')) {
+    onModelCheckboxChange(e.target);
+  }
+});
+
+document.addEventListener('click', function(e) {
+  if (!e.target.closest('.model-selector')) {
+    document.querySelectorAll('.model-dropdown.open').forEach(d => d.classList.remove('open'));
+  }
+});
+
+loadAvailableModels();
+
 function getRowData(id) {
   const row = document.querySelector(`tr[data-id="${id}"]`);
   const data = {};
@@ -253,6 +375,7 @@ function getRowData(id) {
     else if (inp.type === 'datetime-local' && v === '') v = null;
     data[inp.dataset.field] = v;
   });
+  Object.assign(data, getModelSelectorData(id));
   return data;
 }
 
