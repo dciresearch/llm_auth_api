@@ -20,7 +20,9 @@ services:
       - redis_data:/data
 
   main:
-    build: ./docker_manager
+    build:
+      context: .
+      dockerfile: docker_manager/Dockerfile
     container_name: llm_auth_main
     restart: unless-stopped
     depends_on:
