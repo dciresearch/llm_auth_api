@@ -1,6 +1,6 @@
 import logging
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from fastapi import FastAPI, Request, Depends, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, StreamingResponse
@@ -11,6 +11,8 @@ from src.utils import load_global_config
 import httpx
 
 logger = logging.getLogger(__name__)
+
+MSK = timezone(timedelta(hours=3))
 
 CFG = load_global_config()
 ADMIN_SECRET = CFG.get('admin_config', {}).get('admin_secret', '')
@@ -46,14 +48,14 @@ def _check_auth(request: Request):
 def _ts_to_str(ts):
     if ts is None:
         return ""
-    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    return datetime.fromtimestamp(ts, tz=MSK).strftime("%Y-%m-%d %H:%M MSK")
 
 
 def _str_to_ts(s):
     if not s or s.strip() == "":
         return None
     try:
-        return int(datetime.fromisoformat(s.replace("Z", "+00:00")).replace(tzinfo=timezone.utc).timestamp())
+        return int(datetime.fromisoformat(s.replace("Z", "+00:00")).replace(tzinfo=MSK).timestamp())
     except ValueError:
         return int(s) if s.isdigit() else None
 
@@ -68,7 +70,7 @@ def _user_to_dict(u):
         "created_at": u.created_at,
         "created_at_str": _ts_to_str(u.created_at),
         "expires_at": u.expires_at,
-        "expires_at_input": datetime.fromtimestamp(u.expires_at, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M") if u.expires_at else "",
+        "expires_at_input": datetime.fromtimestamp(u.expires_at, tz=MSK).strftime("%Y-%m-%dT%H:%M") if u.expires_at else "",
         "is_active": u.is_active,
         "total_tokens_used": u.total_tokens_used or 0,
         "token_budget": u.token_budget,

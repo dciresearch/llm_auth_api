@@ -4,6 +4,8 @@ import redis.asyncio as aioredis
 
 logger = logging.getLogger(__name__)
 
+MSK_OFFSET = 3 * 3600  # UTC+3 (Moscow)
+
 
 class RateLimiter:
     """Redis-based rate limiter for token and request quotas."""
@@ -31,7 +33,7 @@ class RateLimiter:
         if rate_limits is None:
             return True, None
 
-        now = time.time()
+        now = time.time() + MSK_OFFSET
         minute_bucket = int(now // 60)
         hour_bucket = int(now // 3600)
         day_bucket = int(now // 86400)
@@ -61,7 +63,7 @@ class RateLimiter:
 
     async def increment(self, user_id: int, tokens_used: int) -> None:
         """Increment rate limit counters after a successful request."""
-        now = time.time()
+        now = time.time() + MSK_OFFSET
         minute_bucket = int(now // 60)
         hour_bucket = int(now // 3600)
         day_bucket = int(now // 86400)
