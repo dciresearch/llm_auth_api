@@ -74,7 +74,7 @@ async def post_to_queue(raw_request, command):
                 await asyncio.sleep(0.1)
                 last_processed = -1
 
-                max_wait_time = 180
+                max_wait_time = TIME_TO_EXPIRE
                 start_time = time.time()
 
                 status = "PENDING"

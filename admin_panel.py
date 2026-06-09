@@ -213,7 +213,7 @@ async def playground_chat(request: Request, _=Depends(_check_auth)):
 
     if stream:
         async def stream_proxy():
-            async with httpx.AsyncClient(timeout=httpx.Timeout(300, connect=10)) as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(600, connect=10)) as client:
                 try:
                     async with client.stream(
                         "POST",
@@ -228,7 +228,7 @@ async def playground_chat(request: Request, _=Depends(_check_auth)):
 
         return StreamingResponse(stream_proxy(), media_type="text/event-stream")
     else:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(300, connect=10)) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(600, connect=10)) as client:
             try:
                 r = await client.post(
                     f"http://localhost:{APP_PORT}/v1/chat/completions",
