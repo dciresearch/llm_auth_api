@@ -61,24 +61,26 @@ spawner_lock = asyncio.Lock()
 class InstanceManager:
     def __init__(
         self, config_directory: str, port_range=DEFAULT_PORT_RANGE,
-        max_memory_thr=USED_MEMORY_THRESHOLD, default_idle_time=120
+        max_memory_thr=USED_MEMORY_THRESHOLD, default_idle_time=120,
+        api_db=None
     ):
         self._store: Dict[str, DockerInstance] = {}
         self._known_configs: Dict[str,  GenericDockerConfig] = {}
         self._config_stamps: Dict[str, float] = {}
         self._config_dir = Path(config_directory)
         assert self._config_dir.exists(), "config_directory can't be found, please check the path"
+        self._api_db = api_db
 
         port_ranges = tuple(map(int, port_range.split('-')))
         self._known_ports = set(range(*port_ranges))
 
         self._default_idle_time = default_idle_time
         self._load_or_update_library()
-        self.API_KEY = str(uuid.uuid4())
         self.instance_id = str(uuid.uuid4())[:8]
         self.discard_memory_thr = max_memory_thr
         self.prefix = "dockermanaged_vllm"
         self.remove_possible_orphans()
+        self.reconnect_existing_containers()
 
     def remove_possible_orphans(self):
         client = docker.from_env()
@@ -86,9 +88,57 @@ class InstanceManager:
         for c in containers:
             if c.name.startswith(self.prefix):
                 labels = c.labels or {}
+                # Only kill containers from THIS process instance (same instance_id)
+                # Containers from previous runs will be reconnected instead
                 if labels.get("manager_instance_id") == self.instance_id:
                     logger.info("Killing orphan container: %s", c.name)
                     c.kill()
+
+    def reconnect_existing_containers(self):
+        """Reconnect to containers from a previous run."""
+        if self._api_db is None:
+            return
+        client = docker.from_env()
+        containers = client.containers.list()
+        reconnected = 0
+        for c in containers:
+            if not c.name.startswith(self.prefix):
+                continue
+            parts = c.name.split('__', 1)
+            if len(parts) < 2:
+                continue
+            instance_name = parts[1]
+            config = None
+            for cfg in self._known_configs.values():
+                if cfg.model_alias.replace('/', '_') == instance_name:
+                    config = cfg
+                    break
+            if not config:
+                logger.warning("No config for container %s, skipping reconnect", c.name)
+                continue
+            port_bindings = c.attrs.get('NetworkSettings', {}).get('Ports', {})
+            port_info = port_bindings.get('8000/tcp', [])
+            if not port_info:
+                logger.warning("No port mapping for %s, skipping reconnect", c.name)
+                continue
+            port = int(port_info[0]['HostPort'])
+            url = f"http://localhost:{port}"
+            api_key = self._api_db.get_container_key(config.alias)
+            if not api_key:
+                logger.warning("No API key for %s in DB, skipping reconnect", config.alias)
+                continue
+            idle_limit = config.max_idle_time if config.max_idle_time is not None else self._default_idle_time
+            instance_cls = instance_types[config.config_type]
+            instance = instance_cls(config.alias, url, api_key, c, idle_limit)
+            if instance.check_health():
+                self.track_new_instance(instance)
+                reconnected += 1
+                logger.info("Reconnected: %s at %s", config.alias, url)
+            else:
+                logger.warning("Container %s unhealthy during reconnect, killing", c.name)
+                c.kill()
+        if reconnected:
+            logger.info("Reconnected %d container(s)", reconnected)
 
     def get_allocated_ports(self):
         return {v.port for v in self._store.values()}
@@ -218,15 +268,21 @@ class InstanceManager:
             ):
                 v.stop_container()
                 self._store.pop(k)
+                if self._api_db is not None:
+                    self._api_db.delete_container_key(k)
 
     def purge_instance(self, k):
         v = self._store.pop(k, None)
         if v is not None:
             v.stop_container()
+            if self._api_db is not None:
+                self._api_db.delete_container_key(k)
 
     def purge_all_instances(self):
         for k in list(self._store.keys()):
             self.purge_instance(k)
+        if self._api_db is not None:
+            self._api_db.clear_container_keys()
 
     @staticmethod
     def _collect_container_diag(container):
@@ -249,9 +305,14 @@ class InstanceManager:
     async def spawn_docker(self, config: GenericDockerConfig, startup_time: int = 20, retry_count: int = 20):
         args_builder = spawner_scripts[config.spawn_script]
 
+        # Generate per-model API key
+        api_key = str(uuid.uuid4())
+        if self._api_db is not None:
+            self._api_db.save_container_key(config.alias, api_key)
+
         # Remote configs don't need local GPUs or ports
         if config.remote_url is not None:
-            args = args_builder(config, [], self.API_KEY)
+            args = args_builder(config, [], api_key)
             instance_cls = instance_types[config.config_type]
             instance = instance_cls(
                 config.alias, args.api_url, args.api_key,
@@ -268,7 +329,7 @@ class InstanceManager:
         gpu = docker.types.DeviceRequest(device_ids=gpu_ids, capabilities=[['gpu']])
 
         ports = self.get_vacant_ports(config.ports_needed)
-        args = args_builder(config, ports, self.API_KEY)
+        args = args_builder(config, ports, api_key)
 
         client = docker.from_env()
         name_str = f"{self.prefix}__{args.instance_name}"

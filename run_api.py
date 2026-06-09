@@ -6,10 +6,12 @@ import signal
 import atexit
 import sys
 import redis
+import httpx
 
 
 CFG = load_global_config()['celery_config']
 ADMIN_CFG = load_global_config().get('admin_config', {})
+MANAGER_CFG = load_global_config().get('manager_config', {})
 DEBUG = load_global_config().get('debug', False)
 
 DETACHED_PROCESS = 0x00000008
@@ -21,21 +23,66 @@ app_command = f"uvicorn main_api:app --port {CFG['app_port']} --host 0.0.0.0{rel
 dbapi_command = f"sqlite_web -p {CFG['dbapi_port']} --host 127.0.0.1 ./database/generic.db"
 admin_port = ADMIN_CFG.get('admin_port', 6334)
 admin_command = f"uvicorn admin_panel:app --port {admin_port} --host 0.0.0.0{reload_flag}"
+manager_port = CFG['manager_port']
+manager_secret = MANAGER_CFG.get('manager_secret', '')
 
 
 children = []
-def clean_manager():
+
+
+def terminate_children():
+    """Send SIGTERM to all children and wait briefly."""
     for p in children:
-        p.kill()
+        try:
+            p.terminate()
+        except Exception:
+            pass
+    deadline = time.time() + 5
+    for p in children:
+        remaining = max(0.1, deadline - time.time())
+        try:
+            p.wait(timeout=remaining)
+        except subprocess.TimeoutExpired:
+            pass
 
 
-def int_handler(*args):
+def kill_children():
+    """Force kill any remaining children."""
+    for p in children:
+        if p.poll() is None:
+            try:
+                p.kill()
+            except Exception:
+                pass
+
+
+def graceful_shutdown():
+    """SIGINT (Ctrl+C): tell manager to kill containers, then stop everything."""
+    try:
+        headers = {}
+        if manager_secret:
+            headers["Authorization"] = f"Bearer {manager_secret}"
+        httpx.post(
+            f"http://localhost:{manager_port}/shutdown",
+            headers=headers,
+            timeout=10
+        )
+    except Exception:
+        pass
+    terminate_children()
+    kill_children()
     sys.exit(0)
 
 
-atexit.register(clean_manager)
-signal.signal(signal.SIGTERM, int_handler)
-signal.signal(signal.SIGINT, int_handler)
+def restart_only():
+    """SIGTERM (restart): stop processes but leave containers alive."""
+    terminate_children()
+    kill_children()
+    sys.exit(0)
+
+
+signal.signal(signal.SIGINT, lambda *a: graceful_shutdown())
+signal.signal(signal.SIGTERM, lambda *a: restart_only())
 
 
 for c in [dbapi_command, manager_command, worker_command, app_command, admin_command]:

@@ -57,6 +57,13 @@ class UserAuth(Base):
     rate_limit_requests_per_min: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
 
+class ContainerKey(Base):
+    __tablename__ = "container_keys"
+    model_alias: Mapped[str] = mapped_column(String, primary_key=True)
+    api_key: Mapped[str] = mapped_column(String)
+    created_at: Mapped[int] = mapped_column(Integer, default=lambda: int(datetime.now(timezone.utc).timestamp()))
+
+
 class Database:
     def __init__(self, db_path: str):
         self.engine = create_engine(f"sqlite:///{db_path}?charset=utf8")
@@ -400,4 +407,38 @@ class Database:
             user.rate_limit_tokens_per_day = None
             user.rate_limit_requests_per_min = None
             session.commit()
-            print(f"User {user_id} all rate limits cleared")
+
+    # --- Container key management ---
+
+    def save_container_key(self, model_alias: str, api_key: str) -> None:
+        """Save or update API key for a container model."""
+        with self.Session() as session:
+            existing = session.query(ContainerKey).filter(ContainerKey.model_alias == model_alias).first()
+            if existing:
+                existing.api_key = api_key
+                existing.created_at = self.get_current_ts()
+            else:
+                session.add(ContainerKey(
+                    model_alias=model_alias,
+                    api_key=api_key,
+                    created_at=self.get_current_ts(),
+                ))
+            session.commit()
+
+    def get_container_key(self, model_alias: str) -> Optional[str]:
+        """Get API key for a container model."""
+        with self.Session() as session:
+            row = session.query(ContainerKey).filter(ContainerKey.model_alias == model_alias).first()
+            return row.api_key if row else None
+
+    def delete_container_key(self, model_alias: str) -> None:
+        """Delete API key for a container model."""
+        with self.Session() as session:
+            session.query(ContainerKey).filter(ContainerKey.model_alias == model_alias).delete()
+            session.commit()
+
+    def clear_container_keys(self) -> None:
+        """Delete all container keys."""
+        with self.Session() as session:
+            session.query(ContainerKey).delete()
+            session.commit()
