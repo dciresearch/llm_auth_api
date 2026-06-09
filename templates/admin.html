@@ -401,6 +401,7 @@ async function pgSend() {
       let reasoningDiv = null;
       let msgDiv = null;
       let started = false;
+      let streamError = null;
       let buffer = '';
       while (true) {
         const {done, value} = await reader.read();
@@ -414,6 +415,10 @@ async function pgSend() {
           if (data === '[DONE]') continue;
           try {
             const parsed = JSON.parse(data);
+            if (parsed.error) {
+              streamError = parsed.error.message || JSON.stringify(parsed.error);
+              continue;
+            }
             const delta = parsed.choices?.[0]?.delta;
             if (!delta) continue;
             const reasoning = delta.reasoning || '';
@@ -446,8 +451,11 @@ async function pgSend() {
       if (!started) {
         waitingDiv.remove();
       }
-      if (!msgDiv && !fullReasoning) {
-        pgAppendMsg('assistant', '(empty response)');
+      if (streamError) {
+        pgAppendMsg('error', streamError);
+        pgMessages.pop();
+      } else if (!msgDiv && !fullReasoning) {
+        pgAppendMsg('error', 'Empty response — model may have hit max_tokens during thinking');
       }
       pgMessages.push({role: 'assistant', content: fullText || fullReasoning});
     } else {
