@@ -71,6 +71,8 @@
   .pg-msg-user .pg-msg-role { color: var(--accent); }
   .pg-msg-assistant .pg-msg-role { color: var(--green); }
   .pg-msg-error .pg-msg-role { color: var(--red); }
+  .pg-msg-reasoning .pg-msg-role { color: var(--yellow); }
+  .pg-msg-reasoning .pg-msg-content { color: var(--muted); font-style: italic; font-size: 13px; }
   .pg-params { display: flex; gap: 12px; flex-wrap: wrap; }
   .pg-params .pg-field input[type="number"] { width: 80px; }
   .pg-params .pg-field input[type="range"] { width: 120px; }
@@ -197,6 +199,10 @@
       <div class="pg-field">
         <label>Stream</label>
         <input type="checkbox" id="pg-stream" checked style="width:auto">
+      </div>
+      <div class="pg-field">
+        <label>Reasoning</label>
+        <input type="checkbox" id="pg-reasoning" checked style="width:auto">
       </div>
     </div>
   </div>
@@ -357,6 +363,7 @@ async function pgSend() {
   const maxTokens = parseInt(document.getElementById('pg-max-tokens').value) || 512;
   const topP = parseFloat(document.getElementById('pg-top-p').value) || 1.0;
   const stream = document.getElementById('pg-stream').checked;
+  const enableReasoning = document.getElementById('pg-reasoning').checked;
 
   pgMessages.push({role: 'user', content: msg});
   pgAppendMsg('user', msg);
@@ -367,6 +374,10 @@ async function pgSend() {
     token, model, messages: pgMessages,
     temperature, max_tokens: maxTokens, top_p: topP, stream
   };
+
+  if (!enableReasoning) {
+    body.chat_template_kwargs = {enable_thinking: false};
+  }
 
   try {
     if (stream) {
@@ -386,6 +397,8 @@ async function pgSend() {
       const decoder = new TextDecoder();
       const msgDiv = pgAppendMsg('assistant', '');
       let fullText = '';
+      let fullReasoning = '';
+      let reasoningDiv = null;
       let buffer = '';
       while (true) {
         const {done, value} = await reader.read();
@@ -399,13 +412,26 @@ async function pgSend() {
           if (data === '[DONE]') continue;
           try {
             const parsed = JSON.parse(data);
-            const delta = parsed.choices?.[0]?.delta?.content || '';
-            if (delta) fullText += delta;
-            pgUpdateMsg(msgDiv, fullText);
+            const delta = parsed.choices?.[0]?.delta;
+            if (!delta) continue;
+            const reasoning = delta.reasoning || '';
+            const content = delta.content || '';
+            if (reasoning) {
+              fullReasoning += reasoning;
+              if (!reasoningDiv) {
+                reasoningDiv = pgAppendMsg('reasoning', fullReasoning);
+              } else {
+                pgUpdateMsg(reasoningDiv, fullReasoning);
+              }
+            }
+            if (content) {
+              fullText += content;
+              pgUpdateMsg(msgDiv, fullText);
+            }
           } catch(e) {}
         }
       }
-      pgMessages.push({role: 'assistant', content: fullText});
+      pgMessages.push({role: 'assistant', content: fullText || fullReasoning});
     } else {
       const r = await fetch('/api/playground/chat', {
         method: 'POST',
@@ -417,9 +443,12 @@ async function pgSend() {
         pgAppendMsg('error', j.error.message || JSON.stringify(j.error));
         pgMessages.pop();
       } else {
-        const content = j.choices?.[0]?.message?.content || JSON.stringify(j);
-        pgMessages.push({role: 'assistant', content});
-        pgAppendMsg('assistant', content);
+        const reasoning = j.choices?.[0]?.message?.reasoning || '';
+        const content = j.choices?.[0]?.message?.content || '';
+        if (reasoning) pgAppendMsg('reasoning', reasoning);
+        const display = content || reasoning || JSON.stringify(j);
+        pgMessages.push({role: 'assistant', content: content || reasoning});
+        pgAppendMsg('assistant', display);
       }
     }
   } catch(e) {

@@ -206,6 +206,9 @@ async def playground_chat(request: Request, _=Depends(_check_auth)):
         "stream": stream,
     }
 
+    if "chat_template_kwargs" in data:
+        payload["chat_template_kwargs"] = data["chat_template_kwargs"]
+
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
     if stream:
