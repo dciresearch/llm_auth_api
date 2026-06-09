@@ -17,4 +17,30 @@ services:
     ports:
       - "6379:6379"
     volumes:
-      - ./redis_data:/data
+      - redis_data:/data
+
+  main:
+    build: ./docker_manager
+    container_name: llm_auth_main
+    restart: unless-stopped
+    depends_on:
+      - rabbitmq
+      - redis
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    network_mode: host
+    volumes:
+      - .:/workdir
+      - /var/run/docker.sock:/var/run/docker.sock
+    working_dir: /workdir
+    command: python run_api.py
+
+volumes:
+  redis_data:
