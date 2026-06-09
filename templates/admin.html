@@ -395,10 +395,11 @@ async function pgSend() {
       }
       const reader = resp.body.getReader();
       const decoder = new TextDecoder();
-      const msgDiv = pgAppendMsg('assistant', '');
+      const msgDiv = pgAppendMsg('assistant', 'Waiting for model...');
       let fullText = '';
       let fullReasoning = '';
       let reasoningDiv = null;
+      let started = false;
       let buffer = '';
       while (true) {
         const {done, value} = await reader.read();
@@ -416,6 +417,12 @@ async function pgSend() {
             if (!delta) continue;
             const reasoning = delta.reasoning || '';
             const content = delta.content || '';
+            if (reasoning || content) {
+              if (!started) {
+                started = true;
+                pgUpdateMsg(msgDiv, '');
+              }
+            }
             if (reasoning) {
               fullReasoning += reasoning;
               if (!reasoningDiv) {
@@ -430,6 +437,9 @@ async function pgSend() {
             }
           } catch(e) {}
         }
+      }
+      if (!started) {
+        pgUpdateMsg(msgDiv, '');
       }
       pgMessages.push({role: 'assistant', content: fullText || fullReasoning});
     } else {

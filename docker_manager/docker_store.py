@@ -155,21 +155,25 @@ class InstanceManager:
         if instance_alias not in self._known_configs:
             return (False, f"{instance_alias} is not registered in Config libriary.")
 
-        # TODO make gpuid-based lock
+        config = self._known_configs[instance_alias]
+
+        # Remote models don't need GPU allocation — no lock needed
+        if config.remote_url is not None:
+            spawned = await self.spawn_docker(config)
+            return spawned
+
+        # Local models: lock to protect GPU allocation
         async with spawner_lock:
             # in case the party has started
             if instance_alias in self._store:
                 return True
-            config = self._known_configs[instance_alias]
             # Remove lost dockers
             self.remove_idle_or_crashed_instances(remove_idle=False)
 
-            # Check if we have gpus to spawn new docker (skip for remote configs)
-            if config.remote_url is None:
-                gpu_ids = self.get_gpu_ids(config.gpu_needed)
-                # Try removing idle containers to free up space
-                if not gpu_ids:
-                    self.remove_idle_or_crashed_instances()
+            gpu_ids = self.get_gpu_ids(config.gpu_needed)
+            # Try removing idle containers to free up space
+            if not gpu_ids:
+                self.remove_idle_or_crashed_instances()
             logger.info("Spawning %s...", config.model_alias)
             # TODO add timeout spawn
             spawned = await self.spawn_docker(config)
