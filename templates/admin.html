@@ -288,10 +288,10 @@ async function loadAvailableModels() {
 
 function initModelSelector(sel) {
   const list = sel.querySelector('.model-list');
-  const allowed = sel.dataset.allowed;
-  const isAll = !allowed;
-  const selected = isAll ? [] : JSON.parse(allowed || '[]');
-  sel.dataset.savedAllowed = allowed || '';
+  const raw = sel.dataset.allowed;
+  const isAll = !raw || raw === 'null' || raw === 'all';
+  const selected = isAll ? [] : JSON.parse(raw);
+  sel.dataset.savedAllowed = isAll ? '' : JSON.stringify(selected);
   list.innerHTML = '';
   availableModels.forEach(m => {
     const label = document.createElement('label');
