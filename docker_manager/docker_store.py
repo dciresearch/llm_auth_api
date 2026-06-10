@@ -187,7 +187,11 @@ class InstanceManager:
         model_aliases = sorted(self._known_configs.keys())
         spawned_model_aliases = set(self._store.keys())
         model_lens = [self._known_configs[mn].max_model_len for mn in model_aliases]
-        status = ["spawned" if mn in spawned_model_aliases else "offloaded" for mn in model_aliases]
+        status = [
+            "spawned" if mn in spawned_model_aliases or self._known_configs[mn].remote_url is not None
+            else "offloaded"
+            for mn in model_aliases
+        ]
         return sorted(zip(model_aliases, model_lens, status), key=lambda x: (x[2] == "offloaded", -x[1]))
 
     def fetch_spawned_models(self):
