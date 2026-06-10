@@ -89,6 +89,6 @@ async def make_token(admin_client):
 
     for uid in created:
         try:
-            await admin_client.patch(f"/api/users/{uid}", json={"is_active": 0})
+            await admin_client.delete(f"/api/users/{uid}")
         except Exception:
             pass
