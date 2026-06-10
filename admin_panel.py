@@ -165,6 +165,7 @@ async def api_update_user(user_id: int, request: Request, _=Depends(_check_auth)
             user.rate_limit_requests_per_min = None if v in (None, "", 0) else int(v)
 
         session.commit()
+        api_db.clear_user_key_cache(user_id)
         return _user_to_dict(user)
 
 

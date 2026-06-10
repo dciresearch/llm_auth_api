@@ -291,6 +291,7 @@ function initModelSelector(sel) {
   const allowed = sel.dataset.allowed;
   const isAll = !allowed;
   const selected = isAll ? [] : JSON.parse(allowed || '[]');
+  sel.dataset.savedAllowed = allowed || '';
   list.innerHTML = '';
   availableModels.forEach(m => {
     const label = document.createElement('label');
@@ -326,8 +327,12 @@ function setModelMode(btn, mode) {
     sel.dataset.allowed = '';
     sel.querySelector('.model-selector-btn').textContent = 'all';
   } else {
-    checkboxes.forEach(cb => { cb.disabled = false; });
-    sel.dataset.allowed = JSON.stringify(availableModels);
+    const savedAllowed = sel.dataset.savedAllowed || '';
+    const savedSelected = savedAllowed ? JSON.parse(savedAllowed) : [];
+    checkboxes.forEach(cb => {
+      cb.disabled = false;
+      cb.checked = savedAllowed ? savedSelected.includes(cb.value) : true;
+    });
     sel.querySelector('.model-selector-btn').textContent = 'custom';
   }
 }

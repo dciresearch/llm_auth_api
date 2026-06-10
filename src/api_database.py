@@ -158,6 +158,17 @@ class Database:
             _check_key_cache[auth_key] = result
         return result
 
+    def clear_user_key_cache(self, user_id: int) -> None:
+        """Invalidate cached check_user_key results for a specific user."""
+        if _check_key_cache is None:
+            return
+        keys_to_remove = []
+        for cached_key, cached_val in _check_key_cache.items():
+            if isinstance(cached_val, (list, tuple)) and len(cached_val) >= 2 and cached_val[1] == user_id:
+                keys_to_remove.append(cached_key)
+        for k in keys_to_remove:
+            del _check_key_cache[k]
+
     def list_users(self):
         with self.Session() as session:
             rows = session.query(UserAuth).all()
@@ -201,6 +212,7 @@ class Database:
                 return
             user.allowed_models = allowed
             session.commit()
+            self.clear_user_key_cache(user_id)
             print(f"User {user_id} allowed_models set to: {allowed}")
 
     def set_expiry(self, user_id: int, duration: str):
@@ -236,6 +248,7 @@ class Database:
                 return
             user.is_active = 0
             session.commit()
+            self.clear_user_key_cache(user_id)
             print(f"User {user_id} revoked")
 
     def reactivate_user(self, user_id: int):
@@ -247,6 +260,7 @@ class Database:
                 return
             user.is_active = 1
             session.commit()
+            self.clear_user_key_cache(user_id)
             print(f"User {user_id} reactivated")
 
     def revoke_all_tokens(self):
