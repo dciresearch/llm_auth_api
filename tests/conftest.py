@@ -2,6 +2,7 @@ import os
 import pytest
 import httpx
 import yaml
+import redis.asyncio as aioredis
 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "config.yaml")
 
@@ -16,6 +17,7 @@ _cfg = _load_config()
 API_URL = os.environ.get("API_URL", f"http://localhost:{_cfg['celery_config']['app_port']}")
 ADMIN_URL = os.environ.get("ADMIN_URL", f"http://localhost:{_cfg['admin_config']['admin_port']}")
 ADMIN_SECRET = os.environ.get("ADMIN_SECRET", _cfg["admin_config"]["admin_secret"])
+REDIS_URL = os.environ.get("REDIS_URL", f"redis://localhost:{_cfg['celery_config']['redis_port']}")
 
 
 @pytest.fixture
@@ -87,8 +89,15 @@ async def make_token(admin_client):
 
     yield _factory
 
+    rds = await aioredis.from_url(REDIS_URL)
     for uid in created:
         try:
             await admin_client.delete(f"/api/users/{uid}")
         except Exception:
             pass
+        try:
+            async for key in rds.scan_iter(match=f"rate:{uid}:*"):
+                await rds.delete(key)
+        except Exception:
+            pass
+    await rds.aclose()
