@@ -104,6 +104,7 @@
 <div class="tabs">
   <button class="tab-btn active" onclick="switchTab('tokens')">Tokens</button>
   <button class="tab-btn" onclick="switchTab('playground')">Playground</button>
+  <button class="tab-btn" onclick="switchTab('models')">Models</button>
 </div>
 
 <div id="tab-tokens" class="tab-content active">
@@ -246,6 +247,31 @@
       <button class="btn-green" onclick="pgSend()" id="pg-send-btn">Send</button>
       <button onclick="pgClear()" style="margin-top:4px">Clear</button>
     </div>
+  </div>
+</div>
+
+<div id="tab-models" class="tab-content">
+  <h2>Models</h2>
+  <div class="card">
+    <div style="margin-bottom:12px">
+      <button onclick="loadModels()" class="btn-small">Refresh</button>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>Model</th>
+          <th>Max Seq Len</th>
+          <th>Status</th>
+          <th>Health</th>
+          <th>Idle</th>
+          <th>Max Idle</th>
+          <th>Type</th>
+        </tr>
+      </thead>
+      <tbody id="models-tbody">
+        <tr><td colspan="7" style="color:var(--muted)">Click Refresh or switch to this tab</td></tr>
+      </tbody>
+    </table>
   </div>
 </div>
 
@@ -456,6 +482,61 @@ function switchTab(tab) {
   document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
   document.getElementById('tab-' + tab).classList.add('active');
   event.target.classList.add('active');
+  if (tab === 'models') loadModels();
+}
+
+async function loadModels() {
+  const tbody = document.getElementById('models-tbody');
+  tbody.innerHTML = '<tr><td colspan="7" style="color:var(--muted)">Loading...</td></tr>';
+  try {
+    const [libRes, instRes] = await Promise.all([
+      fetch('/api/models'),
+      fetch('/api/instances'),
+    ]);
+    const lib = await libRes.json();
+    const inst = await instRes.json();
+
+    const instancesMap = {};
+    (inst.instances || []).forEach(i => { instancesMap[i.name] = i; });
+
+    const models = lib.models || [];
+    if (!models.length) {
+      tbody.innerHTML = '<tr><td colspan="7" style="color:var(--muted)">No models found</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = '';
+    models.forEach(([name, maxLen, status]) => {
+      const inst = instancesMap[name] || {};
+      const isVirtual = inst.is_virtual ?? (status === 'spawned' && !inst.idle_minutes && inst.idle_minutes !== 0 ? null : false);
+      const tr = document.createElement('tr');
+      const statusBadge = status === 'spawned'
+        ? '<span class="badge badge-active">spawned</span>'
+        : '<span class="badge badge-inactive">offloaded</span>';
+      const healthBadge = inst.health === true
+        ? '<span class="badge badge-active">ok</span>'
+        : inst.health === false
+          ? '<span class="badge badge-inactive">fail</span>'
+          : '<span style="color:var(--muted)">—</span>';
+      const typeStr = inst.is_virtual === true ? 'remote' : inst.is_virtual === false ? 'local' : '—';
+      const idleStr = inst.idle_minutes !== undefined ? inst.idle_minutes + 'm' : '—';
+      const maxIdleStr = inst.max_idle_minutes !== undefined ? (inst.max_idle_minutes < 0 ? '∞' : inst.max_idle_minutes + 'm') : '—';
+      tr.innerHTML = `
+        <td style="font-family:monospace;font-size:12px">${name}</td>
+        <td>${maxLen ?? '—'}</td>
+        <td>${statusBadge}</td>
+        <td>${healthBadge}</td>
+        <td>${idleStr}</td>
+        <td>${maxIdleStr}</td>
+        <td>${typeStr}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+    flash('Loaded ' + models.length + ' models', true);
+  } catch(e) {
+    tbody.innerHTML = '<tr><td colspan="7" style="color:var(--red)">Error: ' + e.message + '</td></tr>';
+    flash('Failed to load models', false);
+  }
 }
 
 const pgMessages = [];

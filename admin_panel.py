@@ -222,6 +222,40 @@ async def available_models(_=Depends(_check_auth)):
             return {"models": []}
 
 
+@app.get("/api/instances")
+async def api_instances(_=Depends(_check_auth)):
+    """Proxy to manager_server /instances."""
+    async with httpx.AsyncClient(timeout=10) as client:
+        try:
+            headers = {}
+            if MANAGER_SECRET:
+                headers["Authorization"] = f"Bearer {MANAGER_SECRET}"
+            r = await client.get(
+                f"http://localhost:{MANAGER_PORT}/instances",
+                headers=headers,
+            )
+            return JSONResponse(content=r.json(), status_code=r.status_code)
+        except httpx.ConnectError:
+            return JSONResponse(content={"instances": [], "error": "Cannot connect to manager"}, status_code=502)
+
+
+@app.get("/api/models")
+async def api_models(_=Depends(_check_auth)):
+    """Proxy to manager_server /library with full model info."""
+    async with httpx.AsyncClient(timeout=10) as client:
+        try:
+            headers = {}
+            if MANAGER_SECRET:
+                headers["Authorization"] = f"Bearer {MANAGER_SECRET}"
+            r = await client.get(
+                f"http://localhost:{MANAGER_PORT}/library",
+                headers=headers,
+            )
+            return JSONResponse(content=r.json(), status_code=r.status_code)
+        except httpx.ConnectError:
+            return JSONResponse(content={"models": [], "error": "Cannot connect to manager"}, status_code=502)
+
+
 @app.get("/api/playground/models")
 async def playground_models(token: str, _=Depends(_check_auth)):
     async with httpx.AsyncClient(timeout=30) as client:
