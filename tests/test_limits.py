@@ -87,18 +87,21 @@ async def test_06_disallowed_model_returns_403(
 
 
 async def test_07_token_budget_exhausted(
-    api_url, make_token, remote_model
+    api_url, make_token, admin_client, remote_model
 ):
-    _, api_key = await make_token(token_budget=5)
+    user_id, api_key = await make_token(token_budget=100)
 
-    got_429 = False
-    for _ in range(10):
-        r = await _chat(api_url, api_key, remote_model)
-        if r.status_code == 429:
-            assert "budget exhausted" in r.json()["error"]["message"].lower()
-            got_429 = True
-            break
-    assert got_429, "Budget was never exhausted after 10 requests"
+    r1 = await _chat(api_url, api_key, remote_model)
+    assert r1.status_code == 200
+
+    await admin_client.patch(
+        f"/api/users/{user_id}",
+        json={"total_tokens_used": 200},
+    )
+
+    r2 = await _chat(api_url, api_key, remote_model)
+    assert r2.status_code == 429, f"Expected 429, got {r2.status_code}"
+    assert "budget exhausted" in r2.json()["error"]["message"].lower()
 
 
 # ── Rate limits ───────────────────────────────────────────────────────

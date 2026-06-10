@@ -163,6 +163,8 @@ async def api_update_user(user_id: int, request: Request, _=Depends(_check_auth)
         if "rate_limit_requests_per_min" in data:
             v = data["rate_limit_requests_per_min"]
             user.rate_limit_requests_per_min = None if v in (None, "", 0) else int(v)
+        if "total_tokens_used" in data:
+            user.total_tokens_used = int(data["total_tokens_used"]) if data["total_tokens_used"] is not None else 0
 
         session.commit()
         api_db.clear_user_key_cache(user_id)
