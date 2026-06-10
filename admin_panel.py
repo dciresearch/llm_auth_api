@@ -183,6 +183,15 @@ async def api_reset_usage(user_id: int, _=Depends(_check_auth)):
     return {"status": "ok"}
 
 
+@app.get("/api/users/{user_id}/allowed-models")
+async def api_get_allowed_models(user_id: int, _=Depends(_check_auth)):
+    with api_db.Session() as session:
+        user = session.query(UserAuth).filter(UserAuth.id == user_id).first()
+        if not user:
+            raise HTTPException(404, "User not found")
+        return {"allowed_models": user.allowed_models}
+
+
 
 @app.get("/api/available-models")
 async def available_models(_=Depends(_check_auth)):

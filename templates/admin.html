@@ -276,19 +276,29 @@ function copyKey(key, btn) {
 }
 
 let availableModels = [];
+let allowedModelsMap = {};
 
 async function loadAvailableModels() {
   try {
-    const r = await fetch('/api/available-models');
-    const j = await r.json();
-    availableModels = j.models || [];
-    document.querySelectorAll('.model-selector').forEach(initModelSelector);
+    const selectors = document.querySelectorAll('.model-selector');
+    const userIds = [...selectors].map(s => s.dataset.uid);
+    const [modelsResp, ...allowedResps] = await Promise.all([
+      fetch('/api/available-models'),
+      ...userIds.map(id => fetch(`/api/users/${id}/allowed-models`)),
+    ]);
+    const mj = await modelsResp.json();
+    availableModels = mj.models || [];
+    for (let i = 0; i < userIds.length; i++) {
+      const aj = await allowedResps[i].json();
+      allowedModelsMap[userIds[i]] = aj.allowed_models || '';
+    }
+    selectors.forEach(initModelSelector);
   } catch(e) { console.error('Failed to load models:', e); }
 }
 
 function initModelSelector(sel) {
   const list = sel.querySelector('.model-list');
-  const raw = sel.dataset.allowed;
+  const raw = allowedModelsMap[sel.dataset.uid] || '';
   const isAll = !raw || raw === 'null' || raw === 'all';
   const selected = isAll ? [] : JSON.parse(raw);
   sel.dataset.savedAllowed = isAll ? '' : JSON.stringify(selected);
