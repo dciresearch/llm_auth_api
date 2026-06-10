@@ -40,9 +40,11 @@ def get_gpu_memory():
     return rows
 
 
-def find_gpu_ids(gpu_needed, discard_memory_thr):
+def find_gpu_ids(gpu_needed, discard_memory_thr, exclude=None):
     gpu_usage = get_gpu_memory()
-    vacant_gpu = [k for k, v in gpu_usage.items() if v['memory_used'] < discard_memory_thr]
+    excluded = exclude or set()
+    vacant_gpu = [k for k, v in gpu_usage.items()
+                  if v['memory_used'] < discard_memory_thr and k not in excluded]
     if len(vacant_gpu) < gpu_needed:
         return None
     return random.sample(vacant_gpu, gpu_needed)
@@ -56,6 +58,7 @@ def make_server_error(error_text):
 
 
 spawner_lock = asyncio.Lock()
+_inflight_gpus = set()
 
 
 class InstanceManager:
@@ -79,12 +82,12 @@ class InstanceManager:
         self.instance_id = str(uuid.uuid4())[:8]
         self.discard_memory_thr = max_memory_thr
         self.prefix = "dockermanaged_vllm"
+        self._docker_client = docker.from_env()
         self.remove_possible_orphans()
         self.reconnect_existing_containers()
 
     def remove_possible_orphans(self):
-        client = docker.from_env()
-        containers = client.containers.list()
+        containers = self._docker_client.containers.list()
         for c in containers:
             if c.name.startswith(self.prefix):
                 labels = c.labels or {}
@@ -98,8 +101,7 @@ class InstanceManager:
         """Reconnect to containers from a previous run."""
         if self._api_db is None:
             return
-        client = docker.from_env()
-        containers = client.containers.list()
+        containers = self._docker_client.containers.list()
         reconnected = 0
         for c in containers:
             if not c.name.startswith(self.prefix):
@@ -149,8 +151,8 @@ class InstanceManager:
             k=n
         )
 
-    def get_gpu_ids(self, n=1):
-        gpu_ids = find_gpu_ids(n, self.discard_memory_thr)
+    def get_gpu_ids(self, n=1, exclude=None):
+        gpu_ids = find_gpu_ids(n, self.discard_memory_thr, exclude=exclude)
         if gpu_ids is None:
             return []
         gpu_ids = list(map(str, gpu_ids))
@@ -216,7 +218,7 @@ class InstanceManager:
             spawned = await self.spawn_docker(config)
             return spawned
 
-        # Local models: lock to protect GPU allocation
+        # Local models: lock only for GPU allocation (fast)
         async with spawner_lock:
             # in case the party has started
             if instance_alias in self._store:
@@ -224,14 +226,22 @@ class InstanceManager:
             # Remove lost dockers
             self.remove_idle_or_crashed_instances(remove_idle=False)
 
-            gpu_ids = self.get_gpu_ids(config.gpu_needed)
+            gpu_ids = self.get_gpu_ids(config.gpu_needed, exclude=_inflight_gpus)
             # Try removing idle containers to free up space
             if not gpu_ids:
                 self.remove_idle_or_crashed_instances()
-            logger.info("Spawning %s...", config.model_alias)
-            # TODO add timeout spawn
-            spawned = await self.spawn_docker(config)
+                gpu_ids = self.get_gpu_ids(config.gpu_needed, exclude=_inflight_gpus)
+            if not gpu_ids:
+                return (False, "Not enough vacant GPU to spawn Container at this time.")
+            _inflight_gpus.update(gpu_ids)
+
+        # Spawn outside the lock — GPU protected by _inflight_gpus
+        logger.info("Spawning %s (GPUs: %s)...", config.model_alias, gpu_ids)
+        try:
+            spawned = await self.spawn_docker(config, gpu_ids=gpu_ids)
             return spawned
+        finally:
+            _inflight_gpus.difference_update(gpu_ids)
 
     async def fetch_instance_url(self, alias):
         if alias not in self._known_configs:
@@ -306,7 +316,7 @@ class InstanceManager:
             lines.append(f"logs: unavailable ({e})")
         return "\n".join(lines)
 
-    async def spawn_docker(self, config: GenericDockerConfig, startup_time: int = 20, retry_count: int = 20):
+    async def spawn_docker(self, config: GenericDockerConfig, startup_time: int = 30, retry_count: int = 35, gpu_ids=None):
         args_builder = spawner_scripts[config.spawn_script]
 
         # Generate per-model API key
@@ -327,7 +337,8 @@ class InstanceManager:
             self.track_new_instance(instance)
             return True
 
-        gpu_ids = self.get_gpu_ids(config.gpu_needed)
+        if gpu_ids is None:
+            gpu_ids = self.get_gpu_ids(config.gpu_needed)
         if not gpu_ids:
             return (False, "Not enough vacant GPU to spawn Container at this time.")
         gpu = docker.types.DeviceRequest(device_ids=gpu_ids, capabilities=[['gpu']])
@@ -335,7 +346,7 @@ class InstanceManager:
         ports = self.get_vacant_ports(config.ports_needed)
         args = args_builder(config, ports, api_key)
 
-        client = docker.from_env()
+        client = self._docker_client
         name_str = f"{self.prefix}__{args.instance_name}"
         try:
             container = client.containers.run(

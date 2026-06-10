@@ -76,7 +76,7 @@ class VllmTask(Task):
         headers = {}
         if MANAGER_SECRET:
             headers["Authorization"] = f"Bearer {MANAGER_SECRET}"
-        res = requests.get(url, params=kwargs, headers=headers).json()
+        res = requests.get(url, params=kwargs, headers=headers, timeout=660).json()
         return res
 
     def check_health(self):

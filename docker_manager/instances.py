@@ -98,7 +98,7 @@ class DockerInstance:
 
 def is_vllm_up(url=None):
     try:
-        r = requests.get(url=f'{url}/health')
+        r = requests.get(url=f'{url}/health', timeout=10)
         return r.status_code == 200
     except Exception:
         return False
