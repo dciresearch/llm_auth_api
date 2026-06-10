@@ -166,6 +166,14 @@ async def api_update_user(user_id: int, request: Request, _=Depends(_check_auth)
 
         session.commit()
         api_db.clear_user_key_cache(user_id)
+        try:
+            async with httpx.AsyncClient(timeout=5) as _c:
+                await _c.post(
+                    f"http://localhost:{APP_PORT}/internal/clear-cache",
+                    json={"user_key": user.user_key},
+                )
+        except Exception:
+            pass
         return _user_to_dict(user)
 
 

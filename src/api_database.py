@@ -169,6 +169,11 @@ class Database:
         for k in keys_to_remove:
             del _check_key_cache[k]
 
+    def clear_user_key_cache_by_key(self, user_key: str) -> None:
+        """Invalidate cached check_user_key result for a specific auth key."""
+        if _check_key_cache is not None and user_key in _check_key_cache:
+            del _check_key_cache[user_key]
+
     def list_users(self):
         with self.Session() as session:
             rows = session.query(UserAuth).all()

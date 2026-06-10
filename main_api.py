@@ -201,6 +201,15 @@ async def validation_exception_handler(_, exc):
     )
 
 
+@app.post("/internal/clear-cache")
+async def internal_clear_cache(request: Request):
+    data = await request.json()
+    user_key = data.get("user_key")
+    if user_key:
+        api_db.clear_user_key_cache_by_key(user_key)
+    return {"status": "ok"}
+
+
 def extract_auth_token(request):
     if request.headers.get("Authorization") is None:
         return None
@@ -294,7 +303,7 @@ class LoggingIterator:
 @app.middleware("http")
 async def authentication(request: Request, call_next):
     request_dict = await extract_request_details(request)
-    if request.method == "OPTIONS":
+    if request.method == "OPTIONS" or request.url.path.startswith("/internal/"):
         return await call_next(request)
 
     token = extract_auth_token(request)
