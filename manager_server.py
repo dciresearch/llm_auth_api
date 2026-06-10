@@ -53,6 +53,23 @@ async def fetch_model_url(model_alias: str):
     return {"message": msg, "url": url, "key": api_key}
 
 
+@router.get("/instances")
+async def fetch_instances():
+    manager.remove_idle_or_crashed_instances(remove_idle=False)
+    result = []
+    for name, inst in manager._store.items():
+        result.append({
+            "name": name,
+            "url": inst.api_url,
+            "is_virtual": inst.is_virtual,
+            "health": inst.check_health(),
+            "idle_minutes": int(inst.get_time_idle()),
+            "max_idle_minutes": inst.max_idle_time,
+            "expired": inst.expired(),
+        })
+    return {"instances": result}
+
+
 @router.post("/shutdown")
 async def shutdown():
     """Kill all containers and exit. Called by run_api.py on SIGINT."""
