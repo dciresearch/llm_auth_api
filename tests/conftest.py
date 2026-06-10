@@ -25,9 +25,12 @@ def api_url():
 
 @pytest.fixture
 async def admin_client():
+    headers = {}
+    if ADMIN_SECRET:
+        headers["Authorization"] = f"Bearer {ADMIN_SECRET}"
     async with httpx.AsyncClient(
         base_url=ADMIN_URL,
-        headers={"Authorization": f"Bearer {ADMIN_SECRET}"},
+        headers=headers,
         timeout=30,
     ) as c:
         yield c
