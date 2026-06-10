@@ -177,6 +177,7 @@
       {% else %}
         <button class="btn-small btn-green" onclick="toggleActive({{ u.id }}, true)">Activate</button>
       {% endif %}
+      <button class="btn-small btn-danger" onclick="deleteUser({{ u.id }}, '{{ u.user_name }}')">Delete</button>
     </div>
   </td>
 </tr>
@@ -426,6 +427,13 @@ async function toggleActive(id, active) {
     body: JSON.stringify({is_active: active ? 1 : 0})
   });
   if (r.ok) { flash(active ? 'Activated' : 'Revoked', true); location.reload(); }
+  else flash('Error', false);
+}
+
+async function deleteUser(id, name) {
+  if (!confirm(`Delete token "${name}" (ID ${id}) and all its request history?`)) return;
+  const r = await fetch(`/api/users/${id}`, {method: 'DELETE'});
+  if (r.ok) { flash('Deleted', true); location.reload(); }
   else flash('Error', false);
 }
 

@@ -268,6 +268,20 @@ class Database:
             self.clear_user_key_cache(user_id)
             print(f"User {user_id} reactivated")
 
+    def delete_user(self, user_id: int):
+        """Permanently delete a user token and their request history."""
+        with self.Session() as session:
+            user = session.query(UserAuth).filter(UserAuth.id == user_id).first()
+            if user is None:
+                print(f"User {user_id} not found")
+                return False
+            self.clear_user_key_cache(user_id)
+            session.query(Requests).filter(Requests.user_id == user_id).delete()
+            session.delete(user)
+            session.commit()
+            print(f"User {user_id} deleted")
+            return True
+
     def revoke_all_tokens(self):
         """Deactivate ALL user tokens."""
         with self.Session() as session:

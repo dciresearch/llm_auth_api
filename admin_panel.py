@@ -185,6 +185,14 @@ async def api_reset_usage(user_id: int, _=Depends(_check_auth)):
     return {"status": "ok"}
 
 
+@app.delete("/api/users/{user_id}")
+async def api_delete_user(user_id: int, _=Depends(_check_auth)):
+    deleted = api_db.delete_user(user_id)
+    if not deleted:
+        raise HTTPException(404, "User not found")
+    return {"status": "ok"}
+
+
 @app.get("/api/users/{user_id}/allowed-models")
 async def api_get_allowed_models(user_id: int, _=Depends(_check_auth)):
     with api_db.Session() as session:
