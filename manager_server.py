@@ -3,12 +3,21 @@ import sys
 import signal
 import os
 import asyncio
+import logging
 from functools import partial
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse
 from docker_manager.docker_store import InstanceManager
 from src.utils import load_global_config
 from src.api_database import Database
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    stream=sys.stdout,
+    force=True,
+)
 
 
 router = APIRouter()
