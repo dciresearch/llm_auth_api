@@ -43,8 +43,9 @@ def get_gpu_memory():
 def find_gpu_ids(gpu_needed, discard_memory_thr, exclude=None):
     gpu_usage = get_gpu_memory()
     excluded = exclude or set()
-    vacant_gpu = [k for k, v in gpu_usage.items()
-                  if v['memory_used'] < discard_memory_thr and k not in excluded]
+    excluded_str = {str(x) for x in excluded}
+    vacant_gpu = [str(k) for k, v in gpu_usage.items()
+                  if v['memory_used'] < discard_memory_thr and str(k) not in excluded_str]
     if len(vacant_gpu) < gpu_needed:
         return None
     return random.sample(vacant_gpu, gpu_needed)
@@ -155,7 +156,6 @@ class InstanceManager:
         gpu_ids = find_gpu_ids(n, self.discard_memory_thr, exclude=exclude)
         if gpu_ids is None:
             return []
-        gpu_ids = list(map(str, gpu_ids))
         return gpu_ids
 
     def track_new_instance(self, instance: DockerInstance):
@@ -354,7 +354,7 @@ class InstanceManager:
                 command=args.command,
                 name=name_str,
                 detach=True,
-                auto_remove=True,
+                auto_remove=False,
                 tty=True,
                 mounts=args.mounts,
                 ports=args.port_map,
@@ -386,6 +386,10 @@ class InstanceManager:
             diag = self._collect_container_diag(container)
             logger.error("Container %s failed to start.\n%s", config.model_alias, diag)
             instance.stop_container()
+            try:
+                container.remove(force=True)
+            except Exception:
+                pass
             del instance
             return (False, f"Failed to start. {diag}")
 
