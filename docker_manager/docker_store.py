@@ -92,11 +92,14 @@ class InstanceManager:
         for c in containers:
             if c.name.startswith(self.prefix):
                 labels = c.labels or {}
-                # Only kill containers from THIS process instance (same instance_id)
+                # Only remove containers from THIS process instance (same instance_id)
                 # Containers from previous runs will be reconnected instead
                 if labels.get("manager_instance_id") == self.instance_id:
-                    logger.info("Killing orphan container: %s", c.name)
-                    c.kill()
+                    logger.info("Removing orphan container: %s", c.name)
+                    try:
+                        c.remove(force=True)
+                    except Exception:
+                        c.kill()
 
     def reconnect_existing_containers(self):
         """Reconnect to containers from a previous run."""
@@ -139,8 +142,11 @@ class InstanceManager:
                 reconnected += 1
                 logger.info("Reconnected: %s at %s (GPUs: %s)", config.alias, url, gpu_ids)
             else:
-                logger.warning("Container %s unhealthy during reconnect, killing", c.name)
-                c.kill()
+                logger.warning("Container %s unhealthy during reconnect, removing", c.name)
+                try:
+                    c.remove(force=True)
+                except Exception:
+                    c.kill()
         if reconnected:
             logger.info("Reconnected %d container(s)", reconnected)
 
@@ -453,10 +459,6 @@ class InstanceManager:
             diag = self._collect_container_diag(container)
             logger.error("Container %s failed to start.\n%s", config.model_alias, diag)
             instance.stop_container()
-            try:
-                container.remove(force=True)
-            except Exception:
-                pass
             del instance
             _rollback_api_key()
             return (False, f"Failed to start. {diag}")

@@ -89,19 +89,23 @@ class DockerInstance:
     def stop_container(self):
         if self.container is None:
             return
+        # Kill the process first (fast)
         for attempt in range(3):
             try:
                 self.container.kill()
-                return
+                break
             except (NotFound, APIError):
                 return
             except Exception as e:
                 logger.warning("stop_container kill attempt %d failed for %s: %s",
                                attempt + 1, self.name_id, e)
+        # Remove the container to free the name
         try:
             self.container.remove(force=True)
+        except (NotFound, APIError):
+            pass
         except Exception as e:
-            logger.error("stop_container force remove failed for %s: %s", self.name_id, e)
+            logger.error("stop_container remove failed for %s: %s", self.name_id, e)
 
 
 def is_vllm_up(url=None):
