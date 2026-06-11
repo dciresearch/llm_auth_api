@@ -58,10 +58,6 @@ def make_server_error(error_text):
     return SERVER_ERROR_PATTERN.format(error_text)
 
 
-spawner_lock = asyncio.Lock()
-_inflight_gpus = set()
-
-
 class InstanceManager:
     def __init__(
         self, config_directory: str, port_range=DEFAULT_PORT_RANGE,
@@ -86,6 +82,11 @@ class InstanceManager:
         self._docker_client = docker.from_env()
         self.remove_possible_orphans()
         self.reconnect_existing_containers()
+
+        self._spawner_lock = asyncio.Lock()
+        self._inflight_gpus: set = set()
+        self._inflight_ports: set = set()
+        self._inflight_aliases: dict = {}  # alias -> asyncio.Event
 
     def remove_possible_orphans(self):
         containers = self._docker_client.containers.list()
@@ -154,10 +155,12 @@ class InstanceManager:
         return {v.port for v in self._store.values()}
 
     def get_vacant_ports(self, n=1):
-        return random.sample(
-            list(self._known_ports - self.get_allocated_ports()),
-            k=n
+        available = list(
+            self._known_ports - self.get_allocated_ports() - self._inflight_ports
         )
+        if len(available) < n:
+            return None
+        return random.sample(available, k=n)
 
     def get_gpu_ids(self, n=1, exclude=None):
         gpu_ids = find_gpu_ids(n, self.discard_memory_thr, exclude=exclude)
@@ -212,8 +215,7 @@ class InstanceManager:
 
     async def fetch_known_models(self):
         self._load_or_update_library()
-        # Remove lost dockers
-        self.remove_idle_or_crashed_instances(remove_idle=False)
+        await self.remove_idle_or_crashed_instances_async(remove_idle=False)
         model_aliases = sorted(self._known_configs.keys())
         spawned_model_aliases = set(self._store.keys())
         model_lens = [self._known_configs[mn].max_model_len for mn in model_aliases]
@@ -241,42 +243,95 @@ class InstanceManager:
 
         config = self._known_configs[instance_alias]
 
-        # Remote models don't need GPU allocation — no lock needed
+        # Remote models: guard against double-spawn with asyncio.Event
         if config.remote_url is not None:
-            spawned = await self.spawn_docker(config)
-            return spawned
+            return await self._try_spawn_remote(instance_alias, config)
 
         # Local models: evict idle containers one at a time until GPUs are free.
-        # Lock is held only for eviction + GPU check (fast), released during the
-        # driver-wait sleep so other requests are not blocked.
+        # nvidia-smi is run outside lock via asyncio.to_thread.
+        # Port reservation happens atomically with GPU reservation under lock.
         while True:
-            async with spawner_lock:
-                # in case the party has started
+            # Phase 1: snapshot inflight GPUs under lock, check if already spawned
+            async with self._spawner_lock:
                 if instance_alias in self._store:
                     return True
-                # Remove lost dockers
-                self.remove_idle_or_crashed_instances(remove_idle=False)
+                inflight_snapshot = frozenset(self._inflight_gpus)
 
-                gpu_ids = self.get_gpu_ids(config.gpu_needed, exclude=_inflight_gpus)
+            # Phase 2: nvidia-smi outside lock (may block on subprocess)
+            gpu_ids = await asyncio.to_thread(
+                self.get_gpu_ids, config.gpu_needed, inflight_snapshot
+            )
+
+            # Phase 3: double-check, reserve GPU + ports atomically under lock
+            async with self._spawner_lock:
+                if instance_alias in self._store:
+                    return True
+                # Check that found GPUs were not claimed while we waited
+                if gpu_ids and set(gpu_ids) & self._inflight_gpus:
+                    continue  # collision — retry from phase 1
                 if gpu_ids:
-                    _inflight_gpus.update(gpu_ids)
+                    ports = self.get_vacant_ports(config.ports_needed)
+                    if ports is None:
+                        return (False, "No ports available.")
+                    self._inflight_gpus.update(gpu_ids)
+                    self._inflight_ports.update(ports)
                     break
-
-                # Try evicting the single most-idle expired instance
-                evicted = self._evict_one_idle_instance()
-                if not evicted:
+                # No GPU — try evicting the single most-idle expired instance
+                evict_result = self._find_and_pop_expired_instance()
+                if evict_result is None:
                     return (False, "Not enough vacant GPU to spawn Container at this time.")
+                evicted_key, evicted_inst = evict_result
 
-            # Outside the lock — wait for GPU driver to release memory
+            # Outside lock — Docker API may block for seconds
+            try:
+                await asyncio.to_thread(evicted_inst.stop_container)
+            finally:
+                if self._api_db is not None:
+                    self._api_db.delete_container_key(evicted_key)
+            # Wait for GPU driver to release memory, then retry
             await asyncio.sleep(3)
 
-        # Spawn outside the lock — GPU protected by _inflight_gpus
-        logger.info("Spawning %s (GPUs: %s)...", config.model_alias, gpu_ids)
+        # Spawn outside the lock — GPU + ports protected by _inflight_gpus/_inflight_ports
+        logger.info("Spawning %s (GPUs: %s, ports: %s)...", config.model_alias, gpu_ids, ports)
         try:
             spawned = await self.spawn_docker(config, gpu_ids=gpu_ids)
             return spawned
         finally:
-            _inflight_gpus.difference_update(gpu_ids)
+            async with self._spawner_lock:
+                self._inflight_gpus.difference_update(gpu_ids)
+                self._inflight_ports.difference_update(ports)
+
+    async def _try_spawn_remote(self, instance_alias, config):
+        """Spawn a remote model, guarding against double-spawn via asyncio.Event."""
+        while True:
+            async with self._spawner_lock:
+                if instance_alias in self._store:
+                    return True
+                if instance_alias not in self._inflight_aliases:
+                    # We are the first — claim the slot and exit lock
+                    event = asyncio.Event()
+                    self._inflight_aliases[instance_alias] = event
+                    break
+                # Someone else is spawning — grab the event under lock
+                event = self._inflight_aliases[instance_alias]
+
+            # Outside lock — wait for the parallel spawn to complete
+            await event.wait()
+            # After waking: model may be in _store (success) or not (failure)
+            if instance_alias in self._store:
+                return True
+            # Spawn failed — retry (the inflight entry is already cleared)
+            continue
+
+        # We won the slot — spawn
+        try:
+            spawned = await self.spawn_docker(config)
+            return spawned
+        finally:
+            async with self._spawner_lock:
+                if self._inflight_aliases.get(instance_alias) is event:
+                    self._inflight_aliases.pop(instance_alias, None)
+            event.set()  # wake all waiters
 
     async def fetch_instance_url(self, alias):
         if alias not in self._known_configs:
@@ -298,23 +353,50 @@ class InstanceManager:
                 None,
                 None
             )
-        i = self._store[alias]
+        i = self._store.get(alias)
+        if i is None:
+            return (
+                make_server_error(f"{alias} was unloaded during request."),
+                None,
+                None
+            )
         i.reset_access_timer()
         logger.debug("Instance URL for %s: %s", alias, i.url)
         return ("OK", i.url, i.key)
 
     def remove_idle_or_crashed_instances(self, remove_idle=True):
         for k in list(self._store.keys()):
-            v = self._store[k]
+            v = self._store.get(k)
+            if v is None:
+                continue
+            healthy = v.check_health()
             logger.debug("Instance %s: health=%s, idle=%s, max_idle=%s, remove_idle=%s, expired=%s",
-                         k, v.check_health(), v.get_time_idle(), v.max_idle_time, remove_idle, v.expired())
-            if (
-                (
-                    not v.check_health()
-                ) or (
-                    remove_idle and v.expired()
-                )
-            ):
+                         k, healthy, v.get_time_idle(), v.max_idle_time, remove_idle, v.expired())
+            if not healthy or (remove_idle and v.expired()):
+                self._remove_instance(k)
+
+    async def remove_idle_or_crashed_instances_async(self, remove_idle=True):
+        """Non-blocking version: snapshot store, check health outside lock, then remove dead/evict idle."""
+        async with self._spawner_lock:
+            snapshot = list(self._store.items())
+
+        if not snapshot:
+            return
+
+        def _check_health(items):
+            results = []
+            for k, v in items:
+                healthy = v.check_health()
+                should_remove = not healthy or (remove_idle and v.expired())
+                results.append((k, v, healthy, should_remove))
+            return results
+
+        checked = await asyncio.to_thread(_check_health, snapshot)
+
+        for k, v, healthy, should_remove in checked:
+            logger.debug("Instance %s: health=%s, idle=%s, max_idle=%s, remove_idle=%s, expired=%s",
+                         k, healthy, v.get_time_idle(), v.max_idle_time, remove_idle, v.expired())
+            if should_remove:
                 self._remove_instance(k)
 
     def _remove_instance(self, k):
@@ -326,20 +408,36 @@ class InstanceManager:
         if self._api_db is not None:
             self._api_db.delete_container_key(k)
 
-    def _evict_one_idle_instance(self):
-        """Kill the single most-idle expired instance. Returns True if evicted."""
+    def _find_and_pop_expired_instance(self):
+        """Find the most-idle expired instance and pop it from _store (under lock).
+        Returns (key, instance) or None. Caller must handle Docker API cleanup outside lock."""
         expired = [
             (k, v) for k, v in self._store.items()
             if not v.is_virtual and v.expired()
         ]
         if not expired:
-            return False
+            return None
         k, v = max(expired, key=lambda kv: kv[1].get_time_idle())
         logger.info(
             "Evicting idle instance %s (idle %.0fm, limit %sm) to free GPU",
             k, v.get_time_idle(), v.max_idle_time,
         )
-        self._remove_instance(k)
+        self._store.pop(k)
+        return k, v
+
+    async def _evict_one_idle_instance(self):
+        """Kill the most-idle expired instance. Returns True if evicted."""
+        async with self._spawner_lock:
+            result = self._find_and_pop_expired_instance()
+            if result is None:
+                return False
+            evicted_key, evicted_inst = result
+
+        try:
+            await asyncio.to_thread(evicted_inst.stop_container)
+        finally:
+            if self._api_db is not None:
+                self._api_db.delete_container_key(evicted_key)
         return True
 
     def purge_instance(self, k):
@@ -416,6 +514,9 @@ class InstanceManager:
         gpu = docker.types.DeviceRequest(device_ids=gpu_ids, capabilities=[['gpu']])
 
         ports = self.get_vacant_ports(config.ports_needed)
+        if ports is None:
+            _rollback_api_key()
+            return (False, "No ports available.")
         args = args_builder(config, ports, api_key)
 
         client = self._docker_client

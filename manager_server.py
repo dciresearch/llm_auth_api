@@ -46,7 +46,12 @@ async def fetch_library_model_list():
 
 @router.get("/spawned")
 async def fetch_spawned_model_list():
-    return {"models": manager.fetch_spawned_models()}
+    await manager.remove_idle_or_crashed_instances_async()
+    model_aliases = sorted(manager._store.keys())
+    model_lens = [manager._known_configs[mn].max_model_len
+                  if mn in manager._known_configs else -1
+                  for mn in model_aliases]
+    return {"models": list(zip(model_aliases, model_lens))}
 
 
 @router.get("/models")
@@ -57,24 +62,26 @@ async def fetch_model_url(model_alias: str):
 
 @router.get("/instances")
 async def fetch_instances():
-    manager.remove_idle_or_crashed_instances(remove_idle=False)
-    loop = asyncio.get_event_loop()
-    result = []
-    for name, inst in manager._store.items():
-        gpu_info = await loop.run_in_executor(
-            None, partial(manager.get_gpu_info, inst.gpu_ids)
-        )
-        result.append({
-            "name": name,
-            "url": inst.api_url,
-            "is_virtual": inst.is_virtual,
-            "health": inst.check_health(),
-            "idle_minutes": int(inst.get_time_idle()),
-            "max_idle_minutes": inst.max_idle_time,
-            "expired": inst.expired(),
-            "gpu_ids": inst.gpu_ids,
-            "gpu_info": gpu_info,
-        })
+    await manager.remove_idle_or_crashed_instances_async(remove_idle=False)
+    snapshot = list(manager._store.items())
+
+    def build_report(items):
+        result = []
+        for name, inst in items:
+            result.append({
+                "name": name,
+                "url": inst.api_url,
+                "is_virtual": inst.is_virtual,
+                "health": inst.check_health(),
+                "idle_minutes": int(inst.get_time_idle()),
+                "max_idle_minutes": inst.max_idle_time,
+                "expired": inst.expired(),
+                "gpu_ids": inst.gpu_ids,
+                "gpu_info": manager.get_gpu_info(inst.gpu_ids),
+            })
+        return result
+
+    result = await asyncio.to_thread(build_report, snapshot)
     return {"instances": result}
 
 

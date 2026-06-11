@@ -51,7 +51,10 @@ async def post_to_queue(raw_request, command):
         request_json = await raw_request.json()
         stream = request_json.get('stream', False)
     except json.decoder.JSONDecodeError:
-        request_json = {}
+        return JSONResponse(
+            content={"error": {"message": "Invalid JSON in request body"}},
+            status_code=400,
+        )
     request_json = {"command": command, "args": request_json}
     task = send_vllm_request.apply_async(
         args=[request_json], priority=priority,

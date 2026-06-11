@@ -76,7 +76,7 @@ class VllmTask(Task):
         headers = {}
         if MANAGER_SECRET:
             headers["Authorization"] = f"Bearer {MANAGER_SECRET}"
-        res = requests.get(url, params=kwargs, headers=headers, timeout=660).json()
+        res = requests.get(url, params=kwargs, headers=headers, timeout=kwargs.pop('timeout', 1200)).json()
         return res
 
     def check_health(self):
@@ -99,7 +99,8 @@ class VllmTask(Task):
     def fetch_client(self, model_alias):
         res = self.query_manager('models', model_alias=model_alias)
         if res['url'] is None:
-            logger.warning("Model %s unavailable: %s", model_alias, res.get("message"))
+            msg = res.get("message", "")
+            logger.warning("Model %s unavailable: %s", model_alias, msg)
             return None, None
 
         # Since we get raw response the local ports of docker manager
