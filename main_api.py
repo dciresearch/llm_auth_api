@@ -48,8 +48,12 @@ async def post_to_queue(raw_request, command):
     _, _, priority, _, _, _, _ = api_db.check_user_key(token)
     stream = False
     try:
-        request_json = await raw_request.json()
-        stream = request_json.get('stream', False)
+        raw_body = await raw_request.body()
+        if raw_body:
+            request_json = await raw_request.json()
+            stream = request_json.get('stream', False)
+        else:
+            request_json = {}
     except json.decoder.JSONDecodeError:
         return JSONResponse(
             content={"error": {"message": "Invalid JSON in request body"}},
