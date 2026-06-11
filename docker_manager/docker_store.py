@@ -89,18 +89,26 @@ class InstanceManager:
         self._inflight_aliases: dict = {}  # alias -> asyncio.Event
 
     def remove_possible_orphans(self):
-        containers = self._docker_client.containers.list()
+        containers = self._docker_client.containers.list(all=True)
         for c in containers:
-            if c.name.startswith(self.prefix):
-                labels = c.labels or {}
-                # Only remove containers from THIS process instance (same instance_id)
-                # Containers from previous runs will be reconnected instead
-                if labels.get("manager_instance_id") == self.instance_id:
-                    logger.info("Removing orphan container: %s", c.name)
-                    try:
-                        c.remove(force=True)
-                    except Exception:
-                        c.kill()
+            if not c.name.startswith(self.prefix):
+                continue
+            # Remove dead/exited containers from any run
+            if c.status in ('exited', 'dead'):
+                logger.info("Removing dead container: %s (status=%s)", c.name, c.status)
+                try:
+                    c.remove(force=True)
+                except Exception:
+                    pass
+                continue
+            # Remove running containers from THIS process instance
+            labels = c.labels or {}
+            if labels.get("manager_instance_id") == self.instance_id:
+                logger.info("Removing orphan container: %s", c.name)
+                try:
+                    c.remove(force=True)
+                except Exception:
+                    c.kill()
 
     def reconnect_existing_containers(self):
         """Reconnect to containers from a previous run."""
@@ -250,12 +258,14 @@ class InstanceManager:
         # Local models: evict idle containers one at a time until GPUs are free.
         # nvidia-smi is run outside lock via asyncio.to_thread.
         # Port reservation happens atomically with GPU reservation under lock.
+        reserved_gpus = []
+        reserved_ports = []
         while True:
             # Phase 1: snapshot inflight GPUs under lock, check if already spawned
             async with self._spawner_lock:
                 if instance_alias in self._store:
                     return True
-                inflight_snapshot = frozenset(self._inflight_gpus)
+                inflight_snapshot = frozenset(self._inflight_gpus | set(reserved_gpus))
 
             # Phase 2: nvidia-smi outside lock (may block on subprocess)
             gpu_ids = await asyncio.to_thread(
@@ -268,7 +278,9 @@ class InstanceManager:
                     return True
                 # Check that found GPUs were not claimed while we waited
                 if gpu_ids and set(gpu_ids) & self._inflight_gpus:
-                    continue  # collision — retry from phase 1
+                    # Collision — keep GPUs reserved so next nvidia-smi skips them
+                    reserved_gpus.extend(gpu_ids)
+                    continue  # retry from phase 1
                 if gpu_ids:
                     ports = self.get_vacant_ports(config.ports_needed)
                     if ports is None:
@@ -521,24 +533,38 @@ class InstanceManager:
 
         client = self._docker_client
         name_str = f"{self.prefix}__{args.instance_name}"
-        try:
-            container = client.containers.run(
-                args.docker_name,
-                command=args.command,
-                name=name_str,
-                detach=True,
-                auto_remove=False,
-                tty=True,
-                mounts=args.mounts,
-                ports=args.port_map,
-                device_requests=[gpu],
-                shm_size="12G",
-                environment=args.env_args,
-                labels={"manager_instance_id": self.instance_id}
-            )
-        except Exception as e:
-            _rollback_api_key()
-            return (False, str(e))
+        for _attempt in range(2):
+            try:
+                container = client.containers.run(
+                    args.docker_name,
+                    command=args.command,
+                    name=name_str,
+                    detach=True,
+                    auto_remove=False,
+                    tty=True,
+                    mounts=args.mounts,
+                    ports=args.port_map,
+                    device_requests=[gpu],
+                    shm_size="12G",
+                    environment=args.env_args,
+                    labels={"manager_instance_id": self.instance_id}
+                )
+                break
+            except docker.errors.APIError as e:
+                if e.status_code == 409 and _attempt == 0:
+                    # Name conflict — remove stale container and retry
+                    logger.warning("Container name %s conflict, removing stale container", name_str)
+                    try:
+                        stale = client.containers.get(name_str)
+                        stale.remove(force=True)
+                    except Exception:
+                        pass
+                    continue
+                _rollback_api_key()
+                return (False, str(e))
+            except Exception as e:
+                _rollback_api_key()
+                return (False, str(e))
 
         idle_limit = config.max_idle_time if config.max_idle_time is not None else self._default_idle_time
 
