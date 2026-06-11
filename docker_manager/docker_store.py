@@ -84,6 +84,7 @@ class InstanceManager:
         self.reconnect_existing_containers()
 
         self._spawner_lock = asyncio.Lock()
+        self._gpu_alloc_lock = asyncio.Lock()  # serialises nvidia-smi + GPU reservation
         self._inflight_gpus: set = set()
         self._inflight_ports: set = set()
         self._inflight_aliases: dict = {}  # alias -> asyncio.Event
@@ -241,9 +242,12 @@ class InstanceManager:
         return list(zip(model_aliases, model_lens))
 
     async def try_spawn_by_alias(self, instance_alias):
-        # No need for spawning
+        # No need for spawning — but evict if the cached instance is dead
         if instance_alias in self._store:
-            return True
+            if self._store[instance_alias].check_health():
+                return True
+            logger.warning("Instance %s in store but unhealthy, removing before respawn", instance_alias)
+            self._remove_instance(instance_alias)
         # Check if model_alias is registered in the system
         self._load_or_update_library()
         if instance_alias not in self._known_configs:
@@ -255,46 +259,45 @@ class InstanceManager:
         if config.remote_url is not None:
             return await self._try_spawn_remote(instance_alias, config)
 
-        # Local models: evict idle containers one at a time until GPUs are free.
-        # nvidia-smi is run outside lock via asyncio.to_thread.
-        # Port reservation happens atomically with GPU reservation under lock.
-        reserved_gpus = []
+        # Local models: find free GPUs and reserve them atomically.
+        # _gpu_alloc_lock serialises the nvidia-smi call + reservation so that
+        # two concurrent spawn requests cannot both observe the same GPU as free
+        # and both claim it before either has updated _inflight_gpus.
         reserved_ports = []
         while True:
-            # Phase 1: snapshot inflight GPUs under lock, check if already spawned
-            async with self._spawner_lock:
-                if instance_alias in self._store:
-                    return True
-                inflight_snapshot = frozenset(self._inflight_gpus | set(reserved_gpus))
+            async with self._gpu_alloc_lock:
+                # Re-check under alloc lock: maybe a parallel spawn finished.
+                async with self._spawner_lock:
+                    if instance_alias in self._store:
+                        return True
 
-            # Phase 2: nvidia-smi outside lock (may block on subprocess)
-            gpu_ids = await asyncio.to_thread(
-                self.get_gpu_ids, config.gpu_needed, inflight_snapshot
-            )
+                # nvidia-smi runs inside alloc lock but outside spawner lock.
+                # This is safe: alloc lock is held so no other coroutine can
+                # race here; spawner lock is free so health-checks / evictions
+                # can proceed concurrently.
+                exclude = frozenset(self._inflight_gpus)
+                gpu_ids = await asyncio.to_thread(
+                    self.get_gpu_ids, config.gpu_needed, exclude
+                )
 
-            # Phase 3: double-check, reserve GPU + ports atomically under lock
-            async with self._spawner_lock:
-                if instance_alias in self._store:
-                    return True
-                # Check that found GPUs were not claimed while we waited
-                if gpu_ids and set(gpu_ids) & self._inflight_gpus:
-                    # Collision — keep GPUs reserved so next nvidia-smi skips them
-                    reserved_gpus.extend(gpu_ids)
-                    continue  # retry from phase 1
-                if gpu_ids:
-                    ports = self.get_vacant_ports(config.ports_needed)
-                    if ports is None:
-                        return (False, "No ports available.")
-                    self._inflight_gpus.update(gpu_ids)
-                    self._inflight_ports.update(ports)
-                    break
-                # No GPU — try evicting the single most-idle expired instance
-                evict_result = self._find_and_pop_expired_instance()
-                if evict_result is None:
-                    return (False, "Not enough vacant GPU to spawn Container at this time.")
-                evicted_key, evicted_inst = evict_result
+                async with self._spawner_lock:
+                    if instance_alias in self._store:
+                        return True
+                    if gpu_ids:
+                        ports = self.get_vacant_ports(config.ports_needed)
+                        if ports is None:
+                            return (False, "No ports available.")
+                        self._inflight_gpus.update(gpu_ids)
+                        self._inflight_ports.update(ports)
+                        # gpu_ids and ports are reserved — exit alloc lock and spawn
+                        break
+                    # No GPU — try evicting the single most-idle expired instance
+                    evict_result = self._find_and_pop_expired_instance()
+                    if evict_result is None:
+                        return (False, "Not enough vacant GPU to spawn Container at this time.")
+                    evicted_key, evicted_inst = evict_result
 
-            # Outside lock — Docker API may block for seconds
+            # Outside both locks — Docker API may block for seconds
             try:
                 await asyncio.to_thread(evicted_inst.stop_container)
             finally:
