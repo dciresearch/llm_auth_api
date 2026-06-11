@@ -2,6 +2,8 @@ import atexit
 import sys
 import signal
 import os
+import asyncio
+from functools import partial
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse
 from docker_manager.docker_store import InstanceManager
@@ -56,8 +58,12 @@ async def fetch_model_url(model_alias: str):
 @router.get("/instances")
 async def fetch_instances():
     manager.remove_idle_or_crashed_instances(remove_idle=False)
+    loop = asyncio.get_event_loop()
     result = []
     for name, inst in manager._store.items():
+        gpu_info = await loop.run_in_executor(
+            None, partial(manager.get_gpu_info, inst.gpu_ids)
+        )
         result.append({
             "name": name,
             "url": inst.api_url,
@@ -66,6 +72,8 @@ async def fetch_instances():
             "idle_minutes": int(inst.get_time_idle()),
             "max_idle_minutes": inst.max_idle_time,
             "expired": inst.expired(),
+            "gpu_ids": inst.gpu_ids,
+            "gpu_info": gpu_info,
         })
     return {"instances": result}
 

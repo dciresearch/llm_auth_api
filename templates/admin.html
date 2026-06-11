@@ -263,13 +263,14 @@
           <th>Max Seq Len</th>
           <th>Status</th>
           <th>Health</th>
+          <th>GPU</th>
           <th>Idle</th>
           <th>Max Idle</th>
           <th>Type</th>
         </tr>
       </thead>
       <tbody id="models-tbody">
-        <tr><td colspan="7" style="color:var(--muted)">Click Refresh or switch to this tab</td></tr>
+        <tr><td colspan="8" style="color:var(--muted)">Click Refresh or switch to this tab</td></tr>
       </tbody>
     </table>
   </div>
@@ -487,7 +488,7 @@ function switchTab(tab) {
 
 async function loadModels() {
   const tbody = document.getElementById('models-tbody');
-  tbody.innerHTML = '<tr><td colspan="7" style="color:var(--muted)">Loading...</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="8" style="color:var(--muted)">Loading...</td></tr>';
   try {
     const [libRes, instRes] = await Promise.all([
       fetch('/api/models'),
@@ -501,7 +502,7 @@ async function loadModels() {
 
     const models = lib.models || [];
     if (!models.length) {
-      tbody.innerHTML = '<tr><td colspan="7" style="color:var(--muted)">No models found</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="8" style="color:var(--muted)">No models found</td></tr>';
       return;
     }
 
@@ -519,6 +520,7 @@ async function loadModels() {
           ? '<span class="badge badge-inactive">fail</span>'
           : '<span style="color:var(--muted)">—</span>';
       const typeStr = inst.is_virtual === true ? 'remote' : inst.is_virtual === false ? 'local' : '—';
+      const gpuStr = (inst.gpu_info || []).map(g => g.index + ':' + g.uuid.substring(0, 8)).join(', ') || '—';
       const idleStr = inst.idle_minutes !== undefined ? inst.idle_minutes + 'm' : '—';
       const maxIdleStr = inst.max_idle_minutes !== undefined ? (inst.max_idle_minutes < 0 ? '∞' : inst.max_idle_minutes + 'm') : '—';
       tr.innerHTML = `
@@ -526,6 +528,7 @@ async function loadModels() {
         <td>${maxLen ?? '—'}</td>
         <td>${statusBadge}</td>
         <td>${healthBadge}</td>
+        <td style="font-family:monospace;font-size:11px">${gpuStr}</td>
         <td>${idleStr}</td>
         <td>${maxIdleStr}</td>
         <td>${typeStr}</td>
@@ -534,7 +537,7 @@ async function loadModels() {
     });
     flash('Loaded ' + models.length + ' models', true);
   } catch(e) {
-    tbody.innerHTML = '<tr><td colspan="7" style="color:var(--red)">Error: ' + e.message + '</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" style="color:var(--red)">Error: ' + e.message + '</td></tr>';
     flash('Failed to load models', false);
   }
 }

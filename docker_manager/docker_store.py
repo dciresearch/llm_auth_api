@@ -128,15 +128,16 @@ class InstanceManager:
             url = f"http://localhost:{port}"
             api_key = self._api_db.get_container_key(config.alias)
             if not api_key:
-                logger.warning("No API key for %s in DB, skipping reconnect", config.alias)
+                logger.warning("No API key for %s in DB, skipping reconnect", c.name)
                 continue
+            gpu_ids = self._extract_container_gpu_ids(c)
             idle_limit = config.max_idle_time if config.max_idle_time is not None else self._default_idle_time
             instance_cls = instance_types[config.config_type]
-            instance = instance_cls(config.alias, url, api_key, c, idle_limit)
+            instance = instance_cls(config.alias, url, api_key, c, idle_limit, gpu_ids=gpu_ids)
             if instance.check_health():
                 self.track_new_instance(instance)
                 reconnected += 1
-                logger.info("Reconnected: %s at %s", config.alias, url)
+                logger.info("Reconnected: %s at %s (GPUs: %s)", config.alias, url, gpu_ids)
             else:
                 logger.warning("Container %s unhealthy during reconnect, killing", c.name)
                 c.kill()
@@ -157,6 +158,27 @@ class InstanceManager:
         if gpu_ids is None:
             return []
         return gpu_ids
+
+    @staticmethod
+    def get_gpu_info(gpu_ids):
+        """Return GPU info dicts with 'index' and 'uuid' for the given local IDs."""
+        if not gpu_ids:
+            return []
+        try:
+            cmd = "nvidia-smi --query-gpu=index,uuid --format=csv,noheader"
+            out = sp.check_output(cmd.split()).decode("ascii").strip()
+        except Exception:
+            return [{"index": gid, "uuid": "unknown"} for gid in gpu_ids]
+        id_set = {str(g) for g in gpu_ids}
+        result = []
+        for line in out.splitlines():
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) >= 2 and parts[0] in id_set:
+                result.append({"index": parts[0], "uuid": parts[1]})
+        for gid in gpu_ids:
+            if not any(r["index"] == str(gid) for r in result):
+                result.append({"index": str(gid), "uuid": "unknown"})
+        return result
 
     def track_new_instance(self, instance: DockerInstance):
         self._store[instance.name_id] = instance
@@ -218,22 +240,29 @@ class InstanceManager:
             spawned = await self.spawn_docker(config)
             return spawned
 
-        # Local models: lock only for GPU allocation (fast)
-        async with spawner_lock:
-            # in case the party has started
-            if instance_alias in self._store:
-                return True
-            # Remove lost dockers
-            self.remove_idle_or_crashed_instances(remove_idle=False)
+        # Local models: evict idle containers one at a time until GPUs are free.
+        # Lock is held only for eviction + GPU check (fast), released during the
+        # driver-wait sleep so other requests are not blocked.
+        while True:
+            async with spawner_lock:
+                # in case the party has started
+                if instance_alias in self._store:
+                    return True
+                # Remove lost dockers
+                self.remove_idle_or_crashed_instances(remove_idle=False)
 
-            gpu_ids = self.get_gpu_ids(config.gpu_needed, exclude=_inflight_gpus)
-            # Try removing idle containers to free up space
-            if not gpu_ids:
-                self.remove_idle_or_crashed_instances()
                 gpu_ids = self.get_gpu_ids(config.gpu_needed, exclude=_inflight_gpus)
-            if not gpu_ids:
-                return (False, "Not enough vacant GPU to spawn Container at this time.")
-            _inflight_gpus.update(gpu_ids)
+                if gpu_ids:
+                    _inflight_gpus.update(gpu_ids)
+                    break
+
+                # Try evicting the single most-idle expired instance
+                evicted = self._evict_one_idle_instance()
+                if not evicted:
+                    return (False, "Not enough vacant GPU to spawn Container at this time.")
+
+            # Outside the lock — wait for GPU driver to release memory
+            await asyncio.sleep(3)
 
         # Spawn outside the lock — GPU protected by _inflight_gpus
         logger.info("Spawning %s (GPUs: %s)...", config.model_alias, gpu_ids)
@@ -280,17 +309,35 @@ class InstanceManager:
                     remove_idle and v.expired()
                 )
             ):
-                v.stop_container()
-                self._store.pop(k)
-                if self._api_db is not None:
-                    self._api_db.delete_container_key(k)
+                self._remove_instance(k)
+
+    def _remove_instance(self, k):
+        """Remove an instance from store, stop its container, delete API key."""
+        v = self._store.pop(k, None)
+        if v is None:
+            return
+        v.stop_container()
+        if self._api_db is not None:
+            self._api_db.delete_container_key(k)
+
+    def _evict_one_idle_instance(self):
+        """Kill the single most-idle expired instance. Returns True if evicted."""
+        expired = [
+            (k, v) for k, v in self._store.items()
+            if not v.is_virtual and v.expired()
+        ]
+        if not expired:
+            return False
+        k, v = max(expired, key=lambda kv: kv[1].get_time_idle())
+        logger.info(
+            "Evicting idle instance %s (idle %.0fm, limit %sm) to free GPU",
+            k, v.get_time_idle(), v.max_idle_time,
+        )
+        self._remove_instance(k)
+        return True
 
     def purge_instance(self, k):
-        v = self._store.pop(k, None)
-        if v is not None:
-            v.stop_container()
-            if self._api_db is not None:
-                self._api_db.delete_container_key(k)
+        self._remove_instance(k)
 
     def purge_all_instances(self):
         for k in list(self._store.keys()):
@@ -316,6 +363,19 @@ class InstanceManager:
             lines.append(f"logs: unavailable ({e})")
         return "\n".join(lines)
 
+    @staticmethod
+    def _extract_container_gpu_ids(container):
+        """Extract GPU local IDs from container's device requests."""
+        try:
+            reqs = container.attrs.get("HostConfig", {}).get("DeviceRequests", []) or []
+            for req in reqs:
+                ids = req.get("DeviceIDs") or []
+                if ids:
+                    return list(ids)
+        except Exception:
+            pass
+        return []
+
     async def spawn_docker(self, config: GenericDockerConfig, startup_time: int = 30, retry_count: int = 35, gpu_ids=None):
         args_builder = spawner_scripts[config.spawn_script]
 
@@ -323,6 +383,10 @@ class InstanceManager:
         api_key = str(uuid.uuid4())
         if self._api_db is not None:
             self._api_db.save_container_key(config.alias, api_key)
+
+        def _rollback_api_key():
+            if self._api_db is not None:
+                self._api_db.delete_container_key(config.alias)
 
         # Remote configs don't need local GPUs or ports
         if config.remote_url is not None:
@@ -333,6 +397,7 @@ class InstanceManager:
                 None, -1
             )
             if not instance.check_health():
+                _rollback_api_key()
                 return (False, "Remote model is not reachable.")
             self.track_new_instance(instance)
             return True
@@ -340,6 +405,7 @@ class InstanceManager:
         if gpu_ids is None:
             gpu_ids = self.get_gpu_ids(config.gpu_needed)
         if not gpu_ids:
+            _rollback_api_key()
             return (False, "Not enough vacant GPU to spawn Container at this time.")
         gpu = docker.types.DeviceRequest(device_ids=gpu_ids, capabilities=[['gpu']])
 
@@ -364,6 +430,7 @@ class InstanceManager:
                 labels={"manager_instance_id": self.instance_id}
             )
         except Exception as e:
+            _rollback_api_key()
             return (False, str(e))
 
         idle_limit = config.max_idle_time if config.max_idle_time is not None else self._default_idle_time
@@ -371,7 +438,7 @@ class InstanceManager:
         instance_cls = instance_types[config.config_type]
         instance = instance_cls(
             config.alias, args.api_url, args.api_key,
-            container, idle_limit
+            container, idle_limit, gpu_ids=gpu_ids
         )
 
         # Make sure container started with exponential backoff
@@ -391,6 +458,7 @@ class InstanceManager:
             except Exception:
                 pass
             del instance
+            _rollback_api_key()
             return (False, f"Failed to start. {diag}")
 
         self.track_new_instance(instance)

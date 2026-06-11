@@ -4,19 +4,24 @@ import time
 from docker.errors import NotFound, APIError
 import requests
 import re
+import logging
 from src.utils import get_port_from_url
+
+logger = logging.getLogger(__name__)
 
 
 class DockerInstance:
     def __init__(
             self, name_id: str, url: str = None,
-            api_key: str = None, container: Container = None, max_idle_time: int = 0
+            api_key: str = None, container: Container = None, max_idle_time: int = 0,
+            gpu_ids: list = None
     ):
         self.name_id = name_id
         self.api_url = url
         self.api_key = api_key
         self.container = container
         self._max_idle_time = max_idle_time
+        self._gpu_ids = gpu_ids or []
 
         self._time_created = time.time()
         self._last_accessed = time.time()
@@ -49,6 +54,7 @@ class DockerInstance:
             return True
         if self.container_exists():
             return self.container.status == 'running'
+        return False
 
     def check_health(self):
         # print(self.container.status)
@@ -68,6 +74,10 @@ class DockerInstance:
     def max_idle_time(self):
         return self._max_idle_time
 
+    @property
+    def gpu_ids(self):
+        return self._gpu_ids
+
     def get_time_idle(self):
         return (time.time()-self._last_accessed) // 60
 
@@ -79,21 +89,19 @@ class DockerInstance:
     def stop_container(self):
         if self.container is None:
             return
-        for _ in range(3):
+        for attempt in range(3):
             try:
                 self.container.kill()
                 return
             except (NotFound, APIError):
                 return
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("stop_container kill attempt %d failed for %s: %s",
+                               attempt + 1, self.name_id, e)
         try:
             self.container.remove(force=True)
-        except Exception:
-            pass
-
-    def __del__(self):
-        self.stop_container()
+        except Exception as e:
+            logger.error("stop_container force remove failed for %s: %s", self.name_id, e)
 
 
 def is_vllm_up(url=None):
@@ -106,8 +114,6 @@ def is_vllm_up(url=None):
 
 class VllmInstance(DockerInstance):
     def check_api_health(self):
-        if self.is_virtual:
-            return is_vllm_up(self.url)
         return is_vllm_up(self.url)
 
 
