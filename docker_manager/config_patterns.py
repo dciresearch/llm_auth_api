@@ -25,7 +25,7 @@ class GenericDockerConfig:
     gpu_needed: int = 1
     ports_needed: int = 1
     config_type: str = None
-    max_idle_time = None
+    max_idle_time: int = None
     tags: List[str] = dataclasses.field(default_factory=list)
     remote_url: str = None
     remote_key: str = None
