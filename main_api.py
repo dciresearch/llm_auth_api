@@ -253,7 +253,7 @@ class LoggingIterator:
                         if 'error' in msg:
                             self.had_error = True
                         else:
-                            isgen = 'choices' in msg
+                            isgen = bool(msg.get('choices'))
                             data_key = 'delta'
                             self.usage += int(isgen)
                             if 'usage' in msg and msg['usage']:
@@ -262,7 +262,7 @@ class LoggingIterator:
                                 self.total_tokens = msg['usage'].get('total_tokens')
                 else:
                     msg = json.loads(chunk_str)
-                    isgen = 'choices' in msg
+                    isgen = bool(msg.get('choices'))
                     data_key = 'message'
 
                 if isgen:
